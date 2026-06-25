@@ -928,6 +928,7 @@ fn TodoRow(
     let todo = occurrence.source.clone();
     let edit_todo = todo.clone();
     let delete_id = todo.id;
+    let mut notes_expanded = use_signal(|| false);
 
     rsx! {
         div { key: "{occurrence_dom_key(&occurrence)}", class: "grid grid-cols-[auto_1fr_auto] items-start gap-3 border-t border-base-300 px-3 py-3 first:border-t-0",
@@ -965,7 +966,11 @@ fn TodoRow(
                     }
                 }
                 if !todo.notes.trim().is_empty() {
-                    p { class: "mt-1 break-words text-sm opacity-70", "{todo.notes}" }
+                    p {
+                        class: "{todo_notes_class(notes_expanded())}",
+                        onclick: move |_| notes_expanded.set(!notes_expanded()),
+                        "{todo.notes}"
+                    }
                 }
             }
             div { class: "flex gap-1",
@@ -3369,6 +3374,14 @@ fn tab_class(active: bool) -> &'static str {
     }
 }
 
+fn todo_notes_class(expanded: bool) -> &'static str {
+    if expanded {
+        "todo-notes mt-1 block cursor-pointer text-sm opacity-70"
+    } else {
+        "todo-notes todo-notes-collapsed mt-1 block cursor-pointer text-sm opacity-70"
+    }
+}
+
 fn calendar_day_class(selected: bool, other_month: bool) -> &'static str {
     match (selected, other_month) {
         (true, _) => "btn btn-primary h-9 min-h-0 flex-col gap-0.5 p-1 text-xs",
@@ -3919,6 +3932,12 @@ mod tests {
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
         );
+    }
+
+    #[test]
+    fn todo_notes_are_collapsed_until_expanded() {
+        assert!(todo_notes_class(false).contains("todo-notes-collapsed"));
+        assert!(!todo_notes_class(true).contains("todo-notes-collapsed"));
     }
 
     #[test]

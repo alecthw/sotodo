@@ -35,3 +35,15 @@ svg {
     background-color: var(--color-primary-content);
 }
 
+.todo-notes {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.todo-notes-collapsed {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+
