@@ -1,0 +1,24 @@
+[package]
+name = "sotodo"
+version = "0.1.0"
+authors = ["alecthw <alecthw@163.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dioxus = { version = "0.7.1", features = ["router"] }
+dioxus-free-icons = { version = "0.10.0", features = ["lucide"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["time"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+winrt-toast-reborn = "0.3.8"
+
+[features]
+default = ["desktop"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]

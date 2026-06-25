@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --version 0.7.1 --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release
+        run: dx build --platform desktop --release --locked
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\dx\sotodo\release\windows\app\sotodo.exe dist\sotodo.exe
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME dist\sotodo.exe --title $env:GITHUB_REF_NAME --notes "Windows desktop build."
