@@ -24,6 +24,7 @@ use winrt_toast_reborn::{
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 const TAILWIND_CSS: &str = include_str!("../assets/tailwind.css");
+const APPICON_ICO_BYTES: &[u8] = include_bytes!("../assets/appicon.ico");
 const TOAST_APP_ID: &str = "SoTodo.Dioxus.Desktop";
 const TOAST_REMINDER_GROUP: &str = "sotodo-reminders";
 const REMINDER_CATCH_UP_SECONDS: i64 = 60;
@@ -540,66 +541,70 @@ fn notify_icon_data(
 #[cfg(windows)]
 unsafe fn load_tray_icon() -> (windows_sys::Win32::UI::WindowsAndMessaging::HICON, bool) {
     use std::ptr::null_mut;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        LoadIconW, LoadImageW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
 
-    for path in tray_icon_candidates() {
-        if path.exists() {
-            let wide = wide_path(&path);
-            let icon = LoadImageW(
-                null_mut(),
-                wide.as_ptr(),
-                IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
-            ) as windows_sys::Win32::UI::WindowsAndMessaging::HICON;
-            if !icon.is_null() {
-                return (icon, true);
-            }
-        }
+    if let Some(icon) = load_embedded_tray_icon() {
+        return (icon, true);
     }
 
     (LoadIconW(null_mut(), IDI_APPLICATION), false)
 }
 
 #[cfg(windows)]
-fn tray_icon_candidates() -> Vec<std::path::PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(base) = exe.parent() {
-            let assets = base.join("assets");
-            candidates.push(assets.join("appicon.ico"));
-            candidates.extend(find_bundled_app_icons(&assets));
-            candidates.push(base.join("appicon.ico"));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let assets = cwd.join("assets");
-        candidates.push(assets.join("appicon.ico"));
-        candidates.extend(find_bundled_app_icons(&assets));
-    }
-    candidates
+unsafe fn load_embedded_tray_icon() -> Option<windows_sys::Win32::UI::WindowsAndMessaging::HICON> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR};
+
+    let image = best_ico_image(APPICON_ICO_BYTES)?;
+    let icon = CreateIconFromResourceEx(
+        image.as_ptr(),
+        image.len() as u32,
+        1,
+        0x0003_0000,
+        32,
+        32,
+        LR_DEFAULTCOLOR,
+    );
+    (!icon.is_null()).then_some(icon)
 }
 
 #[cfg(windows)]
-fn find_bundled_app_icons(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("ico"))
-                && path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| stem.starts_with("appicon"))
-        })
-        .collect()
+fn best_ico_image(bytes: &[u8]) -> Option<&[u8]> {
+    if read_u16(bytes, 0)? != 0 || read_u16(bytes, 2)? != 1 {
+        return None;
+    }
+
+    let count = read_u16(bytes, 4)? as usize;
+    let mut best: Option<(usize, usize, u32)> = None;
+    for index in 0..count {
+        let entry = 6 + index * 16;
+        let width = bytes.get(entry).copied()? as u32;
+        let width = if width == 0 { 256 } else { width };
+        let size = read_u32(bytes, entry + 8)? as usize;
+        let offset = read_u32(bytes, entry + 12)? as usize;
+        if offset.checked_add(size)? > bytes.len() {
+            continue;
+        }
+        if best.map_or(true, |(_, _, best_width)| width >= best_width) {
+            best = Some((offset, size, width));
+        }
+    }
+
+    let (offset, size, _) = best?;
+    bytes.get(offset..offset + size)
+}
+
+#[cfg(windows)]
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+#[cfg(windows)]
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 #[cfg(windows)]
@@ -625,16 +630,6 @@ unsafe fn close_main_window_native() {
     if !hwnd.is_null() {
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
     }
-}
-
-#[cfg(windows)]
-fn wide_path(path: &std::path::Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-
-    path.as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 #[cfg(windows)]
