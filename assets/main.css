@@ -35,6 +35,42 @@ svg {
     background-color: var(--color-primary-content);
 }
 
+.todo-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: start;
+    column-gap: 0.5rem;
+    row-gap: 0.25rem;
+}
+
+.todo-row-checkbox {
+    margin-top: 0.25rem;
+}
+
+.todo-row-title {
+    min-width: 0;
+    padding-top: 0.25rem;
+    line-height: 1.5rem;
+}
+
+.todo-row-meta {
+    grid-column: 2 / -1;
+}
+
+.todo-row-notes-line {
+    display: contents;
+}
+
+.todo-row-notes-toggle {
+    grid-column: 1;
+    justify-self: start;
+}
+
+.todo-row-notes-text {
+    grid-column: 2 / -1;
+    min-width: 0;
+}
+
 .todo-notes {
     overflow-wrap: anywhere;
     white-space: pre-wrap;
