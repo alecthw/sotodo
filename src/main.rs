@@ -1,7 +1,10 @@
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
 #[cfg(windows)]
 use dioxus::desktop::tao::platform::windows::WindowExtWindows;
-use dioxus::desktop::{tao::window::Icon as WindowIcon, Config, LogicalSize, WindowBuilder};
+use dioxus::desktop::{
+    tao::{dpi::PhysicalPosition, window::Icon as WindowIcon},
+    Config, LogicalSize, WindowBuilder,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::icons::ld_icons::{
     LdAlarmClock, LdCalendar, LdCheck, LdChevronDown, LdChevronLeft, LdChevronRight,
@@ -26,6 +29,13 @@ const TOAST_REMINDER_GROUP: &str = "sotodo-reminders";
 const REMINDER_CATCH_UP_SECONDS: i64 = 60;
 const REMINDER_MIN_DELAY_SECONDS: u64 = 3;
 const UNSCHEDULED_DATE: (i32, u32, u32) = (9999, 12, 31);
+const APP_WINDOW_WIDTH: f64 = 420.0;
+const APP_WINDOW_HEIGHT: f64 = 720.0;
+const APP_VERSION: &str = match option_env!("SOTODO_VERSION") {
+    Some(version) => version,
+    None => "develop",
+};
+const PROJECT_URL: &str = "https://github.com/alecthw/sotodo";
 static REMINDER_THREAD_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 const THEMES: &[&str] = &[
@@ -67,13 +77,13 @@ const THEMES: &[&str] = &[
 ];
 
 fn main() {
-    let mut config = Config::new().with_window(
-        WindowBuilder::new()
-            .with_title("So Todo")
-            .with_inner_size(LogicalSize::new(420.0, 720.0))
-            .with_min_inner_size(LogicalSize::new(360.0, 560.0))
-            .with_decorations(false),
-    );
+    let window = WindowBuilder::new()
+        .with_title("So Todo")
+        .with_inner_size(LogicalSize::new(APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT))
+        .with_min_inner_size(LogicalSize::new(360.0, 560.0))
+        .with_decorations(false);
+
+    let mut config = Config::new().with_window(window);
     if let Some(icon) = app_window_icon() {
         config = config.with_icon(icon);
     }
@@ -81,6 +91,25 @@ fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
         .launch(App);
+}
+
+#[cfg(windows)]
+fn snap_window_to_top_right() {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+
+    let mut work_area = RECT::default();
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work_area as *mut _ as *mut _, 0) != 0
+    };
+    if !ok {
+        return;
+    }
+
+    let window = &dioxus::desktop::window().window;
+    let width = window.outer_size().width as i32;
+    let x = (work_area.right - width).max(work_area.left);
+    window.set_outer_position(PhysicalPosition::new(x, work_area.top));
 }
 
 #[component]
@@ -94,6 +123,29 @@ fn App() -> Element {
 fn app_window_icon() -> Option<WindowIcon> {
     WindowIcon::from_rgba(app_icon_rgba(256), 256, 256).ok()
 }
+
+#[cfg(windows)]
+fn open_project_homepage() {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let action = wide_null("open");
+    let url = wide_null(PROJECT_URL);
+    unsafe {
+        ShellExecuteW(
+            null_mut(),
+            action.as_ptr(),
+            url.as_ptr(),
+            null_mut(),
+            null_mut(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn open_project_homepage() {}
 
 fn app_icon_rgba(size: u32) -> Vec<u8> {
     let scale = size as f32 / 456.0;
@@ -611,6 +663,14 @@ fn TodoApp() -> Element {
         apply_startup_setting(settings.startup_enabled);
     });
     use_hook(move || {
+        #[cfg(windows)]
+        {
+            snap_window_to_top_right();
+            spawn(async move {
+                tokio::time::sleep(StdDuration::from_millis(200)).await;
+                snap_window_to_top_right();
+            });
+        }
         register_system_notifications();
         mutate(app, |state| reschedule_reminders(state, app, clock));
         spawn(async move {
@@ -1212,9 +1272,17 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
     rsx! {
         div { class: "modal modal-open",
             div { class: "modal-box max-h-[92vh] overflow-y-auto",
-                h2 { class: "mb-3 flex items-center gap-2 text-lg font-bold",
-                    Icon { width: 18, height: 18, icon: LdSettings }
-                    "{text.settings}"
+                div { class: "mb-3 flex items-center justify-between gap-3",
+                    h2 { class: "flex items-center gap-2 text-lg font-bold",
+                        Icon { width: 18, height: 18, icon: LdSettings }
+                        "{text.settings}"
+                    }
+                    button {
+                        class: "link link-hover text-xs opacity-70",
+                        title: PROJECT_URL,
+                        onclick: move |_| open_project_homepage(),
+                        "{APP_VERSION}"
+                    }
                 }
 
                 div { class: "divide-y divide-base-300",

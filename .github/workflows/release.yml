@@ -29,6 +29,8 @@ jobs:
         run: cargo test --locked
 
       - name: Build release
+        env:
+          SOTODO_VERSION: ${{ github.ref_name }}
         run: dx build --platform desktop --release --locked
 
       - name: Prepare artifact
