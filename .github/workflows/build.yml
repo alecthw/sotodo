@@ -18,7 +18,10 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --version 0.7.1 --locked
+        shell: pwsh
+        run: |
+          iwr https://dioxuslabs.com/install.ps1 -useb | iex
+          echo "$HOME\.dioxus\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Test
         run: cargo test --locked
