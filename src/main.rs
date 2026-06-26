@@ -949,11 +949,7 @@ fn TodoRow(
             div { class: "todo-row-meta flex flex-wrap items-center gap-2 text-xs opacity-60",
                 span { class: "inline-flex items-center gap-1",
                     Icon { width: 12, height: 12, icon: LdClock }
-                    if has_unspecified_time(occurrence.due_at) {
-                        "{text.unspecified_time}"
-                    } else {
-                        "{todo_time(occurrence.due_at)}"
-                    }
+                    "{todo_time_tag(occurrence.due_at)}"
                 }
                 if todo.is_recurring() {
                     span { class: "badge badge-outline badge-xs gap-1",
@@ -1015,244 +1011,270 @@ fn TodoDialog(
                     }
                     if editor.editing_id.is_some() { "{text.edit_todo}" } else { "{text.new_todo}" }
                 }
-                if !editor.validation.is_empty() {
-                    div { class: "alert alert-error todo-dialog-alert py-2", "{editor.validation}" }
-                }
-
-                label { class: "form-control todo-dialog-field",
-                    div { class: "label py-1", span { class: "label-text", "{text.title}" } }
-                    input {
-                        class: "input input-bordered w-full",
-                        value: "{editor.title}",
-                        oninput: move |e| mutate(app, |s| s.editor.title = e.value()),
+                div { class: "todo-dialog-content",
+                    if !editor.validation.is_empty() {
+                        div { class: "alert alert-error todo-dialog-alert py-2", "{editor.validation}" }
                     }
-                }
 
-                label { class: "form-control todo-dialog-field",
-                    div { class: "label py-1", span { class: "label-text", "{text.notes}" } }
-                    textarea {
-                        class: "textarea textarea-bordered todo-dialog-notes w-full",
-                        value: "{editor.notes}",
-                        oninput: move |e| mutate(app, |s| s.editor.notes = e.value()),
-                    }
-                }
-
-                div { class: "todo-dialog-stack",
                     label { class: "form-control todo-dialog-field",
-                        div { class: "label py-1",
-                            span { class: "label-text flex items-center gap-2",
-                                "{text.date}"
+                        div { class: "label py-1", span { class: "label-text", "{text.title}" } }
+                        input {
+                            class: "input input-bordered w-full",
+                            value: "{editor.title}",
+                            oninput: move |e| mutate(app, |s| s.editor.title = e.value()),
+                        }
+                    }
+
+                    label { class: "form-control todo-dialog-field",
+                        div { class: "label py-1", span { class: "label-text", "{text.notes}" } }
+                        textarea {
+                            class: "textarea textarea-bordered todo-dialog-notes w-full",
+                            value: "{editor.notes}",
+                            oninput: move |e| mutate(app, |s| s.editor.notes = e.value()),
+                        }
+                    }
+
+                    div { class: "todo-dialog-stack",
+                        label { class: "form-control todo-dialog-field",
+                            div { class: "label py-1",
+                                span { class: "label-text flex items-center gap-2",
+                                    "{text.date}"
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "toggle toggle-primary toggle-sm",
+                                        checked: editor.due_date_enabled,
+                                        onchange: move |e| mutate(app, |s| set_editor_date_enabled(&mut s.editor, e.checked())),
+                                    }
+                                }
+                            }
+                            if editor.due_date_enabled {
                                 input {
-                                    r#type: "checkbox",
-                                    class: "toggle toggle-primary toggle-sm",
-                                    checked: editor.due_date_enabled,
-                                    onchange: move |e| mutate(app, |s| set_editor_date_enabled(&mut s.editor, e.checked())),
+                                    r#type: "date",
+                                    class: "input input-bordered w-full",
+                                    value: "{editor.due_date}",
+                                    oninput: move |e| mutate(app, |s| {
+                                        s.editor.due_date = e.value();
+                                        sync_editor_repeat_defaults(&mut s.editor);
+                                    }),
                                 }
                             }
                         }
+
                         if editor.due_date_enabled {
-                            input {
-                                r#type: "date",
-                                class: "input input-bordered w-full",
-                                value: "{editor.due_date}",
-                                oninput: move |e| mutate(app, |s| {
-                                    s.editor.due_date = e.value();
-                                    sync_editor_repeat_defaults(&mut s.editor);
-                                }),
+                            if editor.due_time_enabled {
+                                label { class: "form-control todo-dialog-field",
+                                    div { class: "label py-1",
+                                        span { class: "label-text flex items-center gap-2",
+                                            "{text.time}"
+                                            input {
+                                                r#type: "checkbox",
+                                                class: "toggle toggle-primary toggle-sm",
+                                                checked: editor.due_time_enabled,
+                                                onchange: move |e| mutate(app, |s| {
+                                                    let default_reminders = s.settings.default_reminder_minutes.clone();
+                                                    set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
+                                                }),
+                                            }
+                                        }
+                                    }
+                                    div { class: "grid grid-cols-2 gap-2",
+                                        select {
+                                            class: "select select-bordered w-full",
+                                            value: "{due_hour}",
+                                            onchange: move |e| mutate(app, |s| set_editor_time_hour(&mut s.editor, &e.value())),
+                                            for hour in 0..24 {
+                                                {
+                                                    let value = two_digits(hour);
+                                                    let selected = value == due_hour;
+                                                    rsx! {
+                                                        option { value: "{value}", selected, "{value}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        select {
+                                            class: "select select-bordered w-full",
+                                            value: "{due_minute}",
+                                            onchange: move |e| mutate(app, |s| set_editor_time_minute(&mut s.editor, &e.value())),
+                                            for minute in (0..60).step_by(5) {
+                                                {
+                                                    let value = two_digits(minute);
+                                                    let selected = value == due_minute;
+                                                    rsx! {
+                                                        option { value: "{value}", selected, "{value}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                label { class: "form-control todo-dialog-field",
+                                    div { class: "label py-1",
+                                        span { class: "label-text flex items-center gap-2",
+                                            "{text.time}"
+                                            input {
+                                                r#type: "checkbox",
+                                                class: "toggle toggle-primary toggle-sm",
+                                                checked: editor.due_time_enabled,
+                                                onchange: move |e| mutate(app, |s| {
+                                                    let default_reminders = s.settings.default_reminder_minutes.clone();
+                                                    set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
+                                                }),
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     if editor.due_date_enabled {
-                        if editor.due_time_enabled {
-                            label { class: "form-control todo-dialog-field",
-                                div { class: "label py-1",
-                                    span { class: "label-text flex items-center gap-2",
-                                        "{text.time}"
-                                        input {
-                                            r#type: "checkbox",
-                                            class: "toggle toggle-primary toggle-sm",
-                                            checked: editor.due_time_enabled,
-                                            onchange: move |e| mutate(app, |s| {
-                                                let default_reminders = s.settings.default_reminder_minutes.clone();
-                                                set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
-                                            }),
-                                        }
-                                    }
-                                }
-                                div { class: "grid grid-cols-2 gap-2",
-                                    select {
-                                        class: "select select-bordered w-full",
-                                        value: "{due_hour}",
-                                        onchange: move |e| mutate(app, |s| set_editor_time_hour(&mut s.editor, &e.value())),
-                                        for hour in 0..24 {
-                                            {
-                                                let value = two_digits(hour);
-                                                let selected = value == due_hour;
-                                                rsx! {
-                                                    option { value: "{value}", selected, "{value}" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    select {
-                                        class: "select select-bordered w-full",
-                                        value: "{due_minute}",
-                                        onchange: move |e| mutate(app, |s| set_editor_time_minute(&mut s.editor, &e.value())),
-                                        for minute in (0..60).step_by(5) {
-                                            {
-                                                let value = two_digits(minute);
-                                                let selected = value == due_minute;
-                                                rsx! {
-                                                    option { value: "{value}", selected, "{value}" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            label { class: "form-control todo-dialog-field",
-                                div { class: "label py-1",
-                                    span { class: "label-text flex items-center gap-2",
-                                        "{text.time}"
-                                        input {
-                                            r#type: "checkbox",
-                                            class: "toggle toggle-primary toggle-sm",
-                                            checked: editor.due_time_enabled,
-                                            onchange: move |e| mutate(app, |s| {
-                                                let default_reminders = s.settings.default_reminder_minutes.clone();
-                                                set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
-                                            }),
-                                        }
-                                    }
+                        div { class: "todo-dialog-heading label py-1",
+                            span { class: "label-text flex items-center gap-2",
+                                "{text.repeat}"
+                                input {
+                                    r#type: "checkbox",
+                                    class: "toggle toggle-primary toggle-sm",
+                                    checked: editor.recurring,
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.editor.recurring = e.checked();
+                                        sync_editor_repeat_defaults(&mut s.editor);
+                                    }),
                                 }
                             }
                         }
                     }
-                }
 
-                if editor.due_date_enabled {
-                    div { class: "todo-dialog-heading text-sm font-semibold flex items-center gap-2",
-                        "{text.repeat}"
-                        input {
-                            r#type: "checkbox",
-                            class: "toggle toggle-primary toggle-sm",
-                            checked: editor.recurring,
-                            onchange: move |e| mutate(app, |s| {
-                                s.editor.recurring = e.checked();
-                                sync_editor_repeat_defaults(&mut s.editor);
-                            }),
-                        }
-                    }
-                }
-
-                if editor.due_date_enabled && editor.recurring {
-                    div { class: "todo-dialog-panel rounded-box border border-base-300 bg-base-200 p-3",
-                        label { class: "form-control todo-dialog-field",
-                            div { class: "label py-1", span { class: "label-text", "{text.repeat_type}" } }
-                            select {
-                                class: "select select-bordered w-full",
-                                value: editor.recurrence_kind.as_str(),
-                                onchange: move |e| mutate(app, |s| {
-                                    s.editor.recurrence_kind = RecurrenceKind::from_value(&e.value());
-                                    sync_editor_repeat_defaults(&mut s.editor);
-                                }),
-                                option { value: "weekly", "{text.weekly}" }
-                                option { value: "monthly", "{text.monthly}" }
-                            }
-                        }
-
-                        if editor.recurrence_kind == RecurrenceKind::Weekly {
-                            div { class: "mt-2 grid grid-cols-7 gap-1",
-                                for (index, name) in weekday_names(state.settings.effective_language()).into_iter().enumerate() {
-                                    {
-                                        let selected = editor.weekdays.contains(&(index as u32));
-                                        rsx! {
-                                            button {
-                                                class: if selected { "btn btn-primary btn-xs" } else { "btn btn-outline btn-xs" },
-                                                onclick: move |_| mutate(app, |s| set_weekday(&mut s.editor, index as u32)),
-                                                "{name}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
+                    if editor.due_date_enabled && editor.recurring {
+                        div { class: "todo-dialog-panel rounded-box border border-base-300 bg-base-200 p-3",
                             label { class: "form-control todo-dialog-field",
-                                div { class: "label py-1", span { class: "label-text", "{text.monthly_repeat}" } }
+                                div { class: "label py-1", span { class: "label-text", "{text.repeat_type}" } }
                                 select {
                                     class: "select select-bordered w-full",
-                                    value: editor.monthly_kind.as_str(),
-                                    onchange: move |e| mutate(app, |s| s.editor.monthly_kind = MonthlyKind::from_value(&e.value())),
-                                    option { value: "day", "{text.day_of_month}" }
-                                    option { value: "last_workday", "{text.last_workday}" }
-                                    option { value: "last_day", "{text.last_day}" }
+                                    value: editor.recurrence_kind.as_str(),
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.editor.recurrence_kind = RecurrenceKind::from_value(&e.value());
+                                        sync_editor_repeat_defaults(&mut s.editor);
+                                    }),
+                                    option {
+                                        value: "weekly",
+                                        selected: editor.recurrence_kind == RecurrenceKind::Weekly,
+                                        "{text.weekly}"
+                                    }
+                                    option {
+                                        value: "monthly",
+                                        selected: editor.recurrence_kind == RecurrenceKind::Monthly,
+                                        "{text.monthly}"
+                                    }
                                 }
                             }
-                            if editor.monthly_kind == MonthlyKind::DayOfMonth {
+
+                            if editor.recurrence_kind == RecurrenceKind::Weekly {
+                                div { class: "mt-2 grid grid-cols-7 gap-1",
+                                    for (index, name) in weekday_names(state.settings.effective_language()).into_iter().enumerate() {
+                                        {
+                                            let selected = editor.weekdays.contains(&(index as u32));
+                                            rsx! {
+                                                button {
+                                                    class: if selected { "btn btn-primary btn-xs" } else { "btn btn-outline btn-xs" },
+                                                    onclick: move |_| mutate(app, |s| set_weekday(&mut s.editor, index as u32)),
+                                                    "{name}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
                                 label { class: "form-control todo-dialog-field",
-                                    div { class: "label py-1", span { class: "label-text", "{text.day_number}" } }
-                                    input {
-                                        r#type: "number",
-                                        min: "1",
-                                        max: "31",
-                                        class: "input input-bordered w-full",
-                                        value: "{editor.day_of_month}",
-                                        oninput: move |e| mutate(app, |s| s.editor.day_of_month = e.value()),
+                                    div { class: "label py-1", span { class: "label-text", "{text.monthly_repeat}" } }
+                                    select {
+                                        class: "select select-bordered w-full",
+                                    value: editor.monthly_kind.as_str(),
+                                    onchange: move |e| mutate(app, |s| s.editor.monthly_kind = MonthlyKind::from_value(&e.value())),
+                                    option {
+                                        value: "day",
+                                        selected: editor.monthly_kind == MonthlyKind::DayOfMonth,
+                                        "{text.day_of_month}"
+                                    }
+                                    option {
+                                        value: "last_workday",
+                                        selected: editor.monthly_kind == MonthlyKind::LastWorkday,
+                                        "{text.last_workday}"
+                                    }
+                                    option {
+                                        value: "last_day",
+                                        selected: editor.monthly_kind == MonthlyKind::LastDay,
+                                        "{text.last_day}"
+                                    }
+                                }
+                            }
+                                if editor.monthly_kind == MonthlyKind::DayOfMonth {
+                                    label { class: "form-control todo-dialog-field",
+                                        div { class: "label py-1", span { class: "label-text", "{text.day_number}" } }
+                                        input {
+                                            r#type: "number",
+                                            min: "1",
+                                            max: "31",
+                                            class: "input input-bordered w-full",
+                                            value: "{editor.day_of_month}",
+                                            oninput: move |e| mutate(app, |s| s.editor.day_of_month = e.value()),
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                if editor.due_date_enabled && editor.due_time_enabled {
-                    div { class: "todo-dialog-section",
-                        div { class: "todo-dialog-heading text-sm font-semibold flex items-center gap-2",
-                            "{text.reminders}"
-                            input {
-                                r#type: "checkbox",
-                                class: "toggle toggle-primary toggle-sm",
-                                checked: editor.reminders_enabled,
-                                onchange: move |e| mutate(app, |s| {
-                                    s.editor.reminders_enabled = e.checked();
-                                    if !s.editor.reminders_enabled {
-                                        s.editor.reminders.clear();
-                                    } else if s.editor.reminders.is_empty() {
-                                        s.editor.reminders = s.settings.default_reminder_minutes.clone();
+                    if editor.due_date_enabled && editor.due_time_enabled {
+                        div { class: "todo-dialog-section",
+                            div { class: "todo-dialog-heading label py-1",
+                                span { class: "label-text flex items-center gap-2",
+                                    "{text.reminders}"
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "toggle toggle-primary toggle-sm",
+                                        checked: editor.reminders_enabled,
+                                        onchange: move |e| mutate(app, |s| {
+                                            s.editor.reminders_enabled = e.checked();
+                                            if !s.editor.reminders_enabled {
+                                                s.editor.reminders.clear();
+                                            } else if s.editor.reminders.is_empty() {
+                                                s.editor.reminders = s.settings.default_reminder_minutes.clone();
+                                            }
+                                        }),
                                     }
-                                }),
+                                }
                             }
-                        }
-                        if editor.reminders_enabled {
-                            div { class: "space-y-2",
-                                for minutes in editor.reminders.clone() {
-                                    div { class: "flex items-center justify-between rounded-box bg-base-200 px-3 py-2",
-                                        span { "{minutes} {text.minutes_before}" }
-                                        button {
-                                            class: "btn btn-ghost btn-square btn-xs text-error",
-                                            onclick: move |_| mutate(app, |s| s.editor.reminders.retain(|value| *value != minutes)),
-                                            Icon { width: 13, height: 13, icon: LdX }
+                            if editor.reminders_enabled {
+                                div { class: "space-y-2",
+                                    for minutes in editor.reminders.clone() {
+                                        div { class: "flex items-center justify-between rounded-box bg-base-200 px-3 py-2",
+                                            span { "{minutes} {text.minutes_before}" }
+                                            button {
+                                                class: "btn btn-ghost btn-square btn-xs text-error",
+                                                onclick: move |_| mutate(app, |s| s.editor.reminders.retain(|value| *value != minutes)),
+                                                Icon { width: 13, height: 13, icon: LdX }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
-                                input {
-                                    r#type: "number",
-                                    min: "0",
-                                    max: "10080",
-                                    class: "input input-bordered w-full",
-                                    placeholder: "15",
-                                    value: "{editor.new_reminder}",
-                                    oninput: move |e| mutate(app, |s| s.editor.new_reminder = e.value()),
-                                }
-                                button {
-                                    class: "btn",
-                                    onclick: move |_| mutate(app, |s| add_editor_reminder(&mut s.editor)),
-                                    Icon { width: 15, height: 15, icon: LdPlus }
-                                    "{text.add_reminder}"
+                                div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
+                                    input {
+                                        r#type: "number",
+                                        min: "0",
+                                        max: "10080",
+                                        class: "input input-bordered w-full",
+                                        placeholder: "15",
+                                        value: "{editor.new_reminder}",
+                                        oninput: move |e| mutate(app, |s| s.editor.new_reminder = e.value()),
+                                    }
+                                    button {
+                                        class: "btn",
+                                        onclick: move |_| mutate(app, |s| add_editor_reminder(&mut s.editor)),
+                                        Icon { width: 15, height: 15, icon: LdPlus }
+                                        "{text.add_reminder}"
+                                    }
                                 }
                             }
                         }
@@ -1301,139 +1323,174 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                     }
                 }
 
-                div { class: "divide-y divide-base-300",
-                    div { class: "p-3",
-                        label { class: "form-control",
-                            div { class: "label py-1", span { class: "label-text inline-flex items-center gap-1",
-                                Icon { width: 13, height: 13, icon: LdLanguages }
-                                "{text.language}"
-                            } }
-                            select {
-                                class: "select select-bordered w-full",
-                                value: "{settings.language}",
-                                onchange: move |e| mutate(app, |s| {
-                                    s.settings.language = e.value();
-                                    s.save();
-                                }),
-                                option { value: "system", "{text.system}" }
-                                option { value: "en", "{text.english}" }
-                                option { value: "zh", "{text.chinese}" }
-                            }
-                        }
-                    }
-
-                    div { class: "p-3",
-                        label { class: "form-control",
-                            div { class: "label py-1", span { class: "label-text inline-flex items-center gap-1",
-                                Icon { width: 13, height: 13, icon: LdPalette }
-                                "{text.theme}"
-                            } }
-                            select {
-                                class: "select select-bordered w-full",
-                                value: "{settings.theme}",
-                                onchange: move |e| mutate(app, |s| {
-                                    s.settings.theme = e.value();
-                                    s.save();
-                                }),
-                                option { value: "system", "{text.system}" }
-                                for theme in THEMES {
-                                    option { value: "{theme}", "{theme}" }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "p-3",
-                        label { class: "form-control",
-                            div { class: "label py-1", span { class: "label-text", "{text.close_behavior}" } }
-                            select {
-                                class: "select select-bordered w-full",
-                                value: "{settings.close_behavior}",
-                                onchange: move |e| mutate(app, |s| {
-                                    s.settings.close_behavior = e.value();
-                                    s.save();
-                                }),
-                                option { value: "prompt", "{text.ask_on_close}" }
-                                option { value: "tray", "{text.minimize_to_tray}" }
-                                option { value: "exit", "{text.exit_app}" }
-                            }
-                        }
-                    }
-
-                    div { class: "p-3",
-                        label { class: "flex cursor-pointer items-center justify-between gap-3",
-                            span { class: "font-semibold", "{text.tray_enabled}" }
-                            input {
-                                r#type: "checkbox",
-                                class: "toggle toggle-primary",
-                                checked: settings.tray_enabled,
-                                onchange: move |e| mutate(app, |s| {
-                                    s.settings.tray_enabled = e.checked();
-                                    s.save();
-                                }),
-                            }
-                        }
-                    }
-
-                    div { class: "p-3",
-                        label { class: "flex cursor-pointer items-center justify-between gap-3",
-                            span { class: "font-semibold", "{text.startup_enabled}" }
-                            input {
-                                r#type: "checkbox",
-                                class: "toggle toggle-primary",
-                                checked: settings.startup_enabled,
-                                onchange: move |e| mutate(app, |s| {
-                                    s.settings.startup_enabled = e.checked();
-                                    s.save();
-                                }),
-                            }
-                        }
-                    }
-
-                    div { class: "p-3",
-                        div { class: "flex items-center gap-2 font-semibold",
-                            Icon { width: 15, height: 15, icon: LdAlarmClock }
-                            "{text.default_reminders}"
-                        }
-                        div { class: "mt-2 divide-y divide-base-300 overflow-hidden rounded-box border border-base-300 bg-base-100",
-                            for minutes in settings.default_reminder_minutes.clone() {
-                                div { class: "flex items-center justify-between px-3 py-2",
-                                    span { "{minutes} {text.minutes_before}" }
-                                    button {
-                                        class: "btn btn-ghost btn-square btn-xs text-error",
-                                        onclick: move |_| mutate(app, |s| {
-                                            s.settings.default_reminder_minutes.retain(|value| *value != minutes);
-                                            if s.settings.default_reminder_minutes.is_empty() {
-                                                s.settings.default_reminder_minutes = vec![15, 5];
-                                            }
-                                            s.save();
-                                        }),
-                                        Icon { width: 13, height: 13, icon: LdX }
+                div { class: "settings-dialog-content",
+                    div { class: "divide-y divide-base-300",
+                        div { class: "p-3",
+                            label { class: "form-control",
+                                div { class: "label py-1", span { class: "label-text inline-flex items-center gap-1",
+                                    Icon { width: 13, height: 13, icon: LdLanguages }
+                                    "{text.language}"
+                                } }
+                                select {
+                                    class: "select select-bordered w-full",
+                                    value: "{settings.language}",
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings.language = e.value();
+                                        s.save();
+                                    }),
+                                    option {
+                                        value: "system",
+                                        selected: settings.language == "system",
+                                        "{text.system}"
+                                    }
+                                    option {
+                                        value: "en",
+                                        selected: settings.language == "en",
+                                        "{text.english}"
+                                    }
+                                    option {
+                                        value: "zh",
+                                        selected: settings.language == "zh",
+                                        "{text.chinese}"
                                     }
                                 }
                             }
                         }
-                        div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
-                            input {
-                                r#type: "number",
-                                min: "0",
-                                max: "10080",
-                                class: "input input-bordered w-full",
-                                placeholder: "15",
-                                value: "{state.new_default_reminder}",
-                                oninput: move |e| mutate(app, |s| s.new_default_reminder = e.value()),
+
+                        div { class: "p-3",
+                            label { class: "form-control",
+                                div { class: "label py-1", span { class: "label-text inline-flex items-center gap-1",
+                                    Icon { width: 13, height: 13, icon: LdPalette }
+                                    "{text.theme}"
+                                } }
+                                select {
+                                    class: "select select-bordered w-full",
+                                    value: "{settings.theme}",
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings.theme = e.value();
+                                        s.save();
+                                    }),
+                                    option {
+                                        value: "system",
+                                        selected: settings.theme == "system",
+                                        "{text.system}"
+                                    }
+                                    for theme in THEMES {
+                                        {
+                                            let selected = settings.theme == *theme;
+                                            rsx! {
+                                                option { value: "{theme}", selected, "{theme}" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            button {
-                                class: "btn",
-                                onclick: move |_| add_default_reminder(app),
-                                Icon { width: 15, height: 15, icon: LdPlus }
-                                "{text.add_reminder}"
+                        }
+
+                        div { class: "p-3",
+                            label { class: "form-control",
+                                div { class: "label py-1", span { class: "label-text", "{text.close_behavior}" } }
+                                select {
+                                    class: "select select-bordered w-full",
+                                    value: "{settings.close_behavior}",
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings.close_behavior = e.value();
+                                        s.save();
+                                    }),
+                                    option {
+                                        value: "prompt",
+                                        selected: settings.close_behavior == "prompt",
+                                        "{text.ask_on_close}"
+                                    }
+                                    option {
+                                        value: "tray",
+                                        selected: settings.close_behavior == "tray",
+                                        "{text.minimize_to_tray}"
+                                    }
+                                    option {
+                                        value: "exit",
+                                        selected: settings.close_behavior == "exit",
+                                        "{text.exit_app}"
+                                    }
+                                }
+                            }
+                        }
+
+                        div { class: "p-3",
+                            label { class: "flex cursor-pointer items-center justify-between gap-3",
+                                span { class: "font-semibold", "{text.tray_enabled}" }
+                                input {
+                                    r#type: "checkbox",
+                                    class: "toggle toggle-primary",
+                                    checked: settings.tray_enabled,
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings.tray_enabled = e.checked();
+                                        s.save();
+                                    }),
+                                }
+                            }
+                        }
+
+                        div { class: "p-3",
+                            label { class: "flex cursor-pointer items-center justify-between gap-3",
+                                span { class: "font-semibold", "{text.startup_enabled}" }
+                                input {
+                                    r#type: "checkbox",
+                                    class: "toggle toggle-primary",
+                                    checked: settings.startup_enabled,
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings.startup_enabled = e.checked();
+                                        s.save();
+                                    }),
+                                }
+                            }
+                        }
+
+                        div { class: "p-3",
+                            div { class: "flex items-center gap-2 font-semibold",
+                                Icon { width: 15, height: 15, icon: LdAlarmClock }
+                                "{text.default_reminders}"
+                            }
+                            div { class: "mt-2 divide-y divide-base-300 overflow-hidden rounded-box border border-base-300 bg-base-100",
+                                for minutes in settings.default_reminder_minutes.clone() {
+                                    div { class: "flex items-center justify-between px-3 py-2",
+                                        span { "{minutes} {text.minutes_before}" }
+                                        button {
+                                            class: "btn btn-ghost btn-square btn-xs text-error",
+                                            onclick: move |_| mutate(app, |s| {
+                                                s.settings.default_reminder_minutes.retain(|value| *value != minutes);
+                                                if s.settings.default_reminder_minutes.is_empty() {
+                                                    s.settings.default_reminder_minutes = vec![15, 5];
+                                                }
+                                                s.save();
+                                            }),
+                                            Icon { width: 13, height: 13, icon: LdX }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
+                                input {
+                                    r#type: "number",
+                                    min: "0",
+                                    max: "10080",
+                                    class: "input input-bordered w-full",
+                                    placeholder: "15",
+                                    value: "{state.new_default_reminder}",
+                                    oninput: move |e| mutate(app, |s| s.new_default_reminder = e.value()),
+                                }
+                                button {
+                                    class: "btn",
+                                    onclick: move |_| add_default_reminder(app),
+                                    Icon { width: 15, height: 15, icon: LdPlus }
+                                    "{text.add_reminder}"
+                                }
                             }
                         }
                     }
                 }
 
-                div { class: "modal-action",
+                div { class: "modal-action settings-dialog-actions",
                     button { class: "btn btn-primary", onclick: move |_| close_dialog(app),
                         Icon { width: 15, height: 15, icon: LdCheck }
                         "{text.done}"
@@ -1939,6 +1996,7 @@ struct Strings {
     expand_all: String,
     no_todos: String,
     no_results: String,
+    unspecified_date: String,
     unspecified_time: String,
     new_todo: String,
     edit_todo: String,
@@ -1998,6 +2056,7 @@ impl Strings {
                 expand_all: "\u{5168}\u{90e8}\u{5c55}\u{5f00}".into(),
                 no_todos: "\u{6682}\u{65e0}\u{5f85}\u{529e}".into(),
                 no_results: "\u{6ca1}\u{6709}\u{5339}\u{914d}\u{7684}\u{5f85}\u{529e}".into(),
+                unspecified_date: "\u{672a}\u{6307}\u{5b9a}\u{65e5}\u{671f}".into(),
                 unspecified_time: "\u{672a}\u{6307}\u{5b9a}\u{65f6}\u{95f4}".into(),
                 new_todo: "\u{65b0}\u{5efa}\u{5f85}\u{529e}".into(),
                 edit_todo: "\u{7f16}\u{8f91}\u{5f85}\u{529e}".into(),
@@ -2052,6 +2111,7 @@ impl Strings {
                 expand_all: "Expand all".into(),
                 no_todos: "No todos".into(),
                 no_results: "No matching todos".into(),
+                unspecified_date: "Unspecified date".into(),
                 unspecified_time: "Unspecified time".into(),
                 new_todo: "New todo".into(),
                 edit_todo: "Edit todo".into(),
@@ -3320,8 +3380,8 @@ fn format_date(date: NaiveDate, language: Language) -> String {
 fn format_group_date(date: NaiveDate, language: Language) -> String {
     if is_unscheduled_date(date) {
         return match language {
-            Language::Zh => "\u{672a}\u{6307}\u{5b9a}\u{65f6}\u{95f4}".into(),
-            Language::En => "Unspecified time".into(),
+            Language::Zh => "\u{672a}\u{6307}\u{5b9a}\u{65e5}\u{671f}".into(),
+            Language::En => "Unspecified date".into(),
         };
     }
     format_date(date, language)
@@ -3345,6 +3405,14 @@ fn format_title_datetime(value: NaiveDateTime, language: Language) -> String {
 
 fn todo_time(due_at: NaiveDateTime) -> String {
     format!("{:02}:{:02}", due_at.hour(), due_at.minute())
+}
+
+fn todo_time_tag(due_at: NaiveDateTime) -> String {
+    if has_unspecified_time(due_at) {
+        "--:--".into()
+    } else {
+        todo_time(due_at)
+    }
 }
 
 fn unscheduled_due_at() -> NaiveDateTime {
@@ -3919,6 +3987,31 @@ mod tests {
             &single_occurrence(&unscheduled),
             Local::now().naive_local()
         ));
+    }
+
+    #[test]
+    fn unspecified_date_and_time_labels_are_distinct() {
+        let text = Strings::new(Language::Zh);
+        assert_eq!(
+            text.unspecified_date,
+            "\u{672a}\u{6307}\u{5b9a}\u{65e5}\u{671f}"
+        );
+        assert_eq!(
+            text.unspecified_time,
+            "\u{672a}\u{6307}\u{5b9a}\u{65f6}\u{95f4}"
+        );
+        assert_eq!(
+            format_group_date(unscheduled_due_at().date(), Language::Zh),
+            text.unspecified_date
+        );
+    }
+
+    #[test]
+    fn unspecified_due_time_tag_uses_placeholder() {
+        let today = Local::now().date_naive();
+        assert_eq!(todo_time_tag(unscheduled_due_at()), "--:--");
+        assert_eq!(todo_time_tag(today.and_time(NaiveTime::MIN)), "--:--");
+        assert_eq!(todo_time_tag(today.and_hms_opt(9, 30, 0).unwrap()), "09:30");
     }
 
     #[test]
