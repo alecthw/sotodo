@@ -1006,8 +1006,8 @@ fn TodoDialog(
 
     rsx! {
         div { class: "modal modal-open",
-            div { class: "modal-box max-h-[92vh] overflow-y-auto",
-                h2 { class: "mb-3 flex items-center gap-2 text-lg font-bold",
+            div { class: "modal-box todo-dialog-box",
+                h2 { class: "todo-dialog-title flex items-center gap-2 text-lg font-bold",
                     if editor.editing_id.is_some() {
                         Icon { width: 18, height: 18, icon: LdPencil }
                     } else {
@@ -1016,10 +1016,10 @@ fn TodoDialog(
                     if editor.editing_id.is_some() { "{text.edit_todo}" } else { "{text.new_todo}" }
                 }
                 if !editor.validation.is_empty() {
-                    div { class: "alert alert-error mb-3 py-2", "{editor.validation}" }
+                    div { class: "alert alert-error todo-dialog-alert py-2", "{editor.validation}" }
                 }
 
-                label { class: "form-control",
+                label { class: "form-control todo-dialog-field",
                     div { class: "label py-1", span { class: "label-text", "{text.title}" } }
                     input {
                         class: "input input-bordered w-full",
@@ -1028,17 +1028,17 @@ fn TodoDialog(
                     }
                 }
 
-                label { class: "form-control mt-2",
+                label { class: "form-control todo-dialog-field",
                     div { class: "label py-1", span { class: "label-text", "{text.notes}" } }
                     textarea {
-                        class: "textarea textarea-bordered min-h-24 w-full",
+                        class: "textarea textarea-bordered todo-dialog-notes w-full",
                         value: "{editor.notes}",
                         oninput: move |e| mutate(app, |s| s.editor.notes = e.value()),
                     }
                 }
 
-                div { class: "mt-3 space-y-2",
-                    label { class: "form-control",
+                div { class: "todo-dialog-stack",
+                    label { class: "form-control todo-dialog-field",
                         div { class: "label py-1",
                             span { class: "label-text flex items-center gap-2",
                                 "{text.date}"
@@ -1065,7 +1065,7 @@ fn TodoDialog(
 
                     if editor.due_date_enabled {
                         if editor.due_time_enabled {
-                            label { class: "form-control",
+                            label { class: "form-control todo-dialog-field",
                                 div { class: "label py-1",
                                     span { class: "label-text flex items-center gap-2",
                                         "{text.time}"
@@ -1073,7 +1073,10 @@ fn TodoDialog(
                                             r#type: "checkbox",
                                             class: "toggle toggle-primary toggle-sm",
                                             checked: editor.due_time_enabled,
-                                            onchange: move |e| mutate(app, |s| set_editor_time_enabled(&mut s.editor, e.checked())),
+                                            onchange: move |e| mutate(app, |s| {
+                                                let default_reminders = s.settings.default_reminder_minutes.clone();
+                                                set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
+                                            }),
                                         }
                                     }
                                 }
@@ -1085,8 +1088,9 @@ fn TodoDialog(
                                         for hour in 0..24 {
                                             {
                                                 let value = two_digits(hour);
+                                                let selected = value == due_hour;
                                                 rsx! {
-                                                    option { value: "{value}", "{value}" }
+                                                    option { value: "{value}", selected, "{value}" }
                                                 }
                                             }
                                         }
@@ -1098,8 +1102,9 @@ fn TodoDialog(
                                         for minute in (0..60).step_by(5) {
                                             {
                                                 let value = two_digits(minute);
+                                                let selected = value == due_minute;
                                                 rsx! {
-                                                    option { value: "{value}", "{value}" }
+                                                    option { value: "{value}", selected, "{value}" }
                                                 }
                                             }
                                         }
@@ -1107,7 +1112,7 @@ fn TodoDialog(
                                 }
                             }
                         } else {
-                            label { class: "form-control",
+                            label { class: "form-control todo-dialog-field",
                                 div { class: "label py-1",
                                     span { class: "label-text flex items-center gap-2",
                                         "{text.time}"
@@ -1115,7 +1120,10 @@ fn TodoDialog(
                                             r#type: "checkbox",
                                             class: "toggle toggle-primary toggle-sm",
                                             checked: editor.due_time_enabled,
-                                            onchange: move |e| mutate(app, |s| set_editor_time_enabled(&mut s.editor, e.checked())),
+                                            onchange: move |e| mutate(app, |s| {
+                                                let default_reminders = s.settings.default_reminder_minutes.clone();
+                                                set_editor_time_enabled(&mut s.editor, e.checked(), &default_reminders);
+                                            }),
                                         }
                                     }
                                 }
@@ -1125,7 +1133,7 @@ fn TodoDialog(
                 }
 
                 if editor.due_date_enabled {
-                    div { class: "mt-3 text-sm font-semibold flex items-center gap-2",
+                    div { class: "todo-dialog-heading text-sm font-semibold flex items-center gap-2",
                         "{text.repeat}"
                         input {
                             r#type: "checkbox",
@@ -1140,8 +1148,8 @@ fn TodoDialog(
                 }
 
                 if editor.due_date_enabled && editor.recurring {
-                    div { class: "mt-3 rounded-box border border-base-300 bg-base-200 p-3",
-                        label { class: "form-control",
+                    div { class: "todo-dialog-panel rounded-box border border-base-300 bg-base-200 p-3",
+                        label { class: "form-control todo-dialog-field",
                             div { class: "label py-1", span { class: "label-text", "{text.repeat_type}" } }
                             select {
                                 class: "select select-bordered w-full",
@@ -1171,7 +1179,7 @@ fn TodoDialog(
                                 }
                             }
                         } else {
-                            label { class: "form-control mt-2",
+                            label { class: "form-control todo-dialog-field",
                                 div { class: "label py-1", span { class: "label-text", "{text.monthly_repeat}" } }
                                 select {
                                     class: "select select-bordered w-full",
@@ -1183,7 +1191,7 @@ fn TodoDialog(
                                 }
                             }
                             if editor.monthly_kind == MonthlyKind::DayOfMonth {
-                                label { class: "form-control mt-2",
+                                label { class: "form-control todo-dialog-field",
                                     div { class: "label py-1", span { class: "label-text", "{text.day_number}" } }
                                     input {
                                         r#type: "number",
@@ -1199,9 +1207,9 @@ fn TodoDialog(
                     }
                 }
 
-                div { class: "mt-3",
-                    if editor.due_date_enabled && editor.due_time_enabled {
-                        div { class: "mb-2 text-sm font-semibold flex items-center gap-2",
+                if editor.due_date_enabled && editor.due_time_enabled {
+                    div { class: "todo-dialog-section",
+                        div { class: "todo-dialog-heading text-sm font-semibold flex items-center gap-2",
                             "{text.reminders}"
                             input {
                                 r#type: "checkbox",
@@ -1217,41 +1225,41 @@ fn TodoDialog(
                                 }),
                             }
                         }
-                    }
-                    if editor.due_date_enabled && editor.due_time_enabled && editor.reminders_enabled {
-                        div { class: "space-y-2",
-                            for minutes in editor.reminders.clone() {
-                                div { class: "flex items-center justify-between rounded-box bg-base-200 px-3 py-2",
-                                    span { "{minutes} {text.minutes_before}" }
-                                    button {
-                                        class: "btn btn-ghost btn-square btn-xs text-error",
-                                        onclick: move |_| mutate(app, |s| s.editor.reminders.retain(|value| *value != minutes)),
-                                        Icon { width: 13, height: 13, icon: LdX }
+                        if editor.reminders_enabled {
+                            div { class: "space-y-2",
+                                for minutes in editor.reminders.clone() {
+                                    div { class: "flex items-center justify-between rounded-box bg-base-200 px-3 py-2",
+                                        span { "{minutes} {text.minutes_before}" }
+                                        button {
+                                            class: "btn btn-ghost btn-square btn-xs text-error",
+                                            onclick: move |_| mutate(app, |s| s.editor.reminders.retain(|value| *value != minutes)),
+                                            Icon { width: 13, height: 13, icon: LdX }
+                                        }
                                     }
                                 }
                             }
-                        }
-                        div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
-                            input {
-                                r#type: "number",
-                                min: "0",
-                                max: "10080",
-                                class: "input input-bordered w-full",
-                                placeholder: "15",
-                                value: "{editor.new_reminder}",
-                                oninput: move |e| mutate(app, |s| s.editor.new_reminder = e.value()),
-                            }
-                            button {
-                                class: "btn",
-                                onclick: move |_| mutate(app, |s| add_editor_reminder(&mut s.editor)),
-                                Icon { width: 15, height: 15, icon: LdPlus }
-                                "{text.add_reminder}"
+                            div { class: "mt-2 grid grid-cols-[6rem_1fr] gap-2",
+                                input {
+                                    r#type: "number",
+                                    min: "0",
+                                    max: "10080",
+                                    class: "input input-bordered w-full",
+                                    placeholder: "15",
+                                    value: "{editor.new_reminder}",
+                                    oninput: move |e| mutate(app, |s| s.editor.new_reminder = e.value()),
+                                }
+                                button {
+                                    class: "btn",
+                                    onclick: move |_| mutate(app, |s| add_editor_reminder(&mut s.editor)),
+                                    Icon { width: 15, height: 15, icon: LdPlus }
+                                    "{text.add_reminder}"
+                                }
                             }
                         }
                     }
                 }
 
-                div { class: "modal-action",
+                div { class: "modal-action todo-dialog-actions",
                     button { class: "btn", onclick: move |_| close_dialog(app),
                         Icon { width: 15, height: 15, icon: LdX }
                         "{text.cancel}"
@@ -1279,8 +1287,8 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
 
     rsx! {
         div { class: "modal modal-open",
-            div { class: "modal-box max-h-[92vh] overflow-y-auto",
-                div { class: "mb-3 flex items-center justify-between gap-3",
+            div { class: "modal-box settings-dialog-box",
+                div { class: "settings-dialog-title flex items-center justify-between gap-3",
                     h2 { class: "flex items-center gap-2 text-lg font-bold",
                         Icon { width: 18, height: 18, icon: LdSettings }
                         "{text.settings}"
@@ -1852,6 +1860,8 @@ impl TodoEditor {
             .unwrap_or(due_at.day() as i32)
             .clamp(1, 31);
 
+        let editor_time_enabled = todo.map(|_| time_enabled).unwrap_or(false);
+
         Self {
             editing_id: todo.map(|item| item.id),
             title: todo.map(|item| item.title.clone()).unwrap_or_default(),
@@ -1861,15 +1871,15 @@ impl TodoEditor {
             } else {
                 String::new()
             },
-            due_time_enabled: todo.map(|_| time_enabled).unwrap_or(true),
-            due_time: if time_enabled {
+            due_time_enabled: editor_time_enabled,
+            due_time: if editor_time_enabled {
                 due_at.time().format("%H:%M").to_string()
             } else {
                 String::new()
             },
             reminders_enabled: todo
                 .map(|item| time_enabled && !item.reminder_minutes.is_empty())
-                .unwrap_or(true),
+                .unwrap_or(false),
             notes: todo.map(|item| item.notes.clone()).unwrap_or_default(),
             was_done: todo.map(|item| item.is_done).unwrap_or_default(),
             completed_at: todo.and_then(|item| item.completed_at),
@@ -2328,10 +2338,14 @@ fn set_editor_date_enabled(editor: &mut TodoEditor, enabled: bool) {
     }
 }
 
-fn set_editor_time_enabled(editor: &mut TodoEditor, enabled: bool) {
+fn set_editor_time_enabled(editor: &mut TodoEditor, enabled: bool, default_reminders: &[i32]) {
     editor.due_time_enabled = enabled;
     if enabled {
         editor.due_time = default_due_at().format("%H:%M").to_string();
+        editor.reminders_enabled = true;
+        if editor.reminders.is_empty() {
+            editor.reminders = default_reminders.to_vec();
+        }
     } else {
         editor.due_time.clear();
         editor.reminders_enabled = false;
@@ -3935,6 +3949,23 @@ mod tests {
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
         );
+    }
+
+    #[test]
+    fn new_todo_starts_without_time_and_enables_default_reminders_with_time() {
+        let mut editor = TodoEditor::new(None, &[30, 5]);
+        assert!(editor.due_date_enabled);
+        assert!(!editor.due_time_enabled);
+        assert!(editor.due_time.is_empty());
+        assert!(!editor.reminders_enabled);
+
+        set_editor_time_enabled(&mut editor, true, &[30, 5]);
+
+        assert!(editor.due_time_enabled);
+        assert!(editor.reminders_enabled);
+        assert_eq!(editor.reminders, vec![30, 5]);
+        let time = NaiveTime::parse_from_str(&editor.due_time, "%H:%M").unwrap();
+        assert_eq!(time.minute() % 5, 0);
     }
 
     #[test]
