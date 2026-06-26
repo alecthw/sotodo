@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="456" height="456" viewBox="0 0 456 456" xmlns="http://www.w3.org/2000/svg">
-    <rect x="34" y="34" width="388" height="388" rx="92" fill="#0D9488"/>
-    <rect x="112" y="78" width="232" height="300" rx="34" fill="#F8FAFC"/>
-    <path d="M152 162H276" stroke="#0F172A" stroke-width="22" stroke-linecap="round"/>
-    <path d="M152 220H250" stroke="#0F172A" stroke-width="22" stroke-linecap="round"/>
-    <path d="M152 278H218" stroke="#0F172A" stroke-width="22" stroke-linecap="round"/>
-    <path d="M220 296L264 340L356 230" fill="none" stroke="#FACC15" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="16" y="16" width="424" height="424" rx="100" fill="#0D9488"/>
+    <rect x="94" y="58" width="260" height="336" rx="38" fill="#F8FAFC"/>
+    <path d="M136 150H280" stroke="#0F172A" stroke-width="24" stroke-linecap="round"/>
+    <path d="M136 216H260" stroke="#0F172A" stroke-width="24" stroke-linecap="round"/>
+    <path d="M136 282H220" stroke="#0F172A" stroke-width="24" stroke-linecap="round"/>
+    <path d="M216 302L266 352L362 220" fill="none" stroke="#FACC15" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

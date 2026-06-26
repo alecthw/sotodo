@@ -8,9 +8,9 @@ use dioxus::desktop::{
 use dioxus::prelude::*;
 use dioxus_free_icons::icons::ld_icons::{
     LdAlarmClock, LdCalendar, LdCheck, LdChevronDown, LdChevronLeft, LdChevronRight,
-    LdChevronsDown, LdChevronsUp, LdCircleCheck, LdClock, LdKeyboard, LdLanguages, LdListTodo,
-    LdMinus, LdPalette, LdPencil, LdPin, LdPinOff, LdPlus, LdRepeat, LdSave, LdSettings, LdTrash2,
-    LdX,
+    LdChevronsDown, LdChevronsUp, LdCircleArrowUp, LdCircleCheck, LdClock, LdKeyboard, LdLanguages,
+    LdListTodo, LdMinus, LdPalette, LdPencil, LdPin, LdPinOff, LdPlus, LdRepeat, LdSave,
+    LdSettings, LdTrash2, LdX,
 };
 use dioxus_free_icons::Icon;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -38,7 +38,14 @@ const APP_VERSION: &str = match option_env!("SOTODO_VERSION") {
     None => "develop",
 };
 const PROJECT_URL: &str = "https://github.com/alecthw/sotodo";
+const LATEST_RELEASE_API_PATH: &str = "/repos/alecthw/sotodo/releases/latest";
+const UPDATE_STATUS_NO_UPDATE: u8 = 0;
+const UPDATE_STATUS_AVAILABLE: u8 = 1;
 static REMINDER_THREAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+static UPDATE_CHECK_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static UPDATE_STATUS: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(UPDATE_STATUS_NO_UPDATE);
 
 const THEMES: &[&str] = &[
     "light",
@@ -149,6 +156,124 @@ fn open_project_homepage() {
 #[cfg(not(windows))]
 fn open_project_homepage() {}
 
+#[cfg(windows)]
+unsafe fn winhttp_get(host: &str, path: &str) -> Option<String> {
+    use windows_sys::Win32::Networking::WinHttp::{
+        WinHttpAddRequestHeaders, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+        WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+        WinHttpSetTimeouts, INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_QUERY_STATUS_CODE,
+    };
+
+    struct HttpHandle(*mut core::ffi::c_void);
+    impl Drop for HttpHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    windows_sys::Win32::Networking::WinHttp::WinHttpCloseHandle(self.0);
+                }
+            }
+        }
+    }
+
+    let agent = wide_null("SoTodo/1.0");
+    let session = WinHttpOpen(
+        agent.as_ptr(),
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        std::ptr::null(),
+        std::ptr::null(),
+        0,
+    );
+    if session.is_null() {
+        return None;
+    }
+    let session = HttpHandle(session);
+    WinHttpSetTimeouts(session.0, 3000, 3000, 3000, 5000);
+
+    let host = wide_null(host);
+    let connect = WinHttpConnect(session.0, host.as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if connect.is_null() {
+        return None;
+    }
+    let connect = HttpHandle(connect);
+
+    let method = wide_null("GET");
+    let path = wide_null(path);
+    let request = WinHttpOpenRequest(
+        connect.0,
+        method.as_ptr(),
+        path.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        std::ptr::null(),
+        WINHTTP_FLAG_SECURE,
+    );
+    if request.is_null() {
+        return None;
+    }
+    let request = HttpHandle(request);
+
+    let headers = wide_null(
+        "User-Agent: SoTodo\r\nAccept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n",
+    );
+    if WinHttpAddRequestHeaders(
+        request.0,
+        headers.as_ptr(),
+        (headers.len() - 1) as u32,
+        WINHTTP_ADDREQ_FLAG_ADD,
+    ) == 0
+    {
+        return None;
+    }
+
+    if WinHttpSendRequest(request.0, std::ptr::null(), 0, std::ptr::null(), 0, 0, 0) == 0 {
+        return None;
+    }
+    if WinHttpReceiveResponse(request.0, std::ptr::null_mut()) == 0 {
+        return None;
+    }
+
+    let mut status_code = 0u32;
+    let mut status_size = std::mem::size_of::<u32>() as u32;
+    if WinHttpQueryHeaders(
+        request.0,
+        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        std::ptr::null(),
+        &mut status_code as *mut u32 as *mut _,
+        &mut status_size,
+        std::ptr::null_mut(),
+    ) == 0
+        || status_code != 200
+    {
+        return None;
+    }
+
+    let mut body = Vec::new();
+    loop {
+        let mut buffer = [0u8; 4096];
+        let mut read = 0u32;
+        if WinHttpReadData(
+            request.0,
+            buffer.as_mut_ptr() as *mut _,
+            buffer.len() as u32,
+            &mut read,
+        ) == 0
+        {
+            return None;
+        }
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&buffer[..read as usize]);
+        if body.len() > 256 * 1024 {
+            return None;
+        }
+    }
+
+    String::from_utf8(body).ok()
+}
+
 fn app_icon_rgba(size: u32) -> Vec<u8> {
     let scale = size as f32 / 456.0;
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
@@ -159,30 +284,30 @@ fn app_icon_rgba(size: u32) -> Vec<u8> {
             let mut color: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
             if rounded_rect_contains(
                 point,
-                34.0 * scale,
-                34.0 * scale,
-                388.0 * scale,
-                388.0 * scale,
-                92.0 * scale,
+                16.0 * scale,
+                16.0 * scale,
+                424.0 * scale,
+                424.0 * scale,
+                100.0 * scale,
             ) {
                 color = [13.0, 148.0, 136.0, 255.0];
             }
             if rounded_rect_contains(
                 point,
-                112.0 * scale,
-                78.0 * scale,
-                232.0 * scale,
-                300.0 * scale,
-                34.0 * scale,
+                94.0 * scale,
+                58.0 * scale,
+                260.0 * scale,
+                336.0 * scale,
+                38.0 * scale,
             ) {
                 color = [248.0, 250.0, 252.0, 255.0];
             }
             for (start, end, width, rgb) in [
-                ((152.0, 162.0), (276.0, 162.0), 22.0, [15.0, 23.0, 42.0]),
-                ((152.0, 220.0), (250.0, 220.0), 22.0, [15.0, 23.0, 42.0]),
-                ((152.0, 278.0), (218.0, 278.0), 22.0, [15.0, 23.0, 42.0]),
-                ((220.0, 296.0), (264.0, 340.0), 36.0, [250.0, 204.0, 21.0]),
-                ((264.0, 340.0), (356.0, 230.0), 36.0, [250.0, 204.0, 21.0]),
+                ((136.0, 150.0), (280.0, 150.0), 24.0, [15.0, 23.0, 42.0]),
+                ((136.0, 216.0), (260.0, 216.0), 24.0, [15.0, 23.0, 42.0]),
+                ((136.0, 282.0), (220.0, 282.0), 24.0, [15.0, 23.0, 42.0]),
+                ((216.0, 302.0), (266.0, 352.0), 40.0, [250.0, 204.0, 21.0]),
+                ((266.0, 352.0), (362.0, 220.0), 40.0, [250.0, 204.0, 21.0]),
             ] {
                 if distance_to_segment(
                     point,
@@ -795,6 +920,7 @@ fn TodoApp() -> Element {
             });
         }
         register_system_notifications();
+        start_update_check();
         mutate(app, |state| reschedule_reminders(state, app, clock));
         spawn(async move {
             loop {
@@ -807,7 +933,7 @@ fn TodoApp() -> Element {
     let now = clock();
     let language = state.settings.effective_language();
     let text = Strings::new(language);
-    let theme = state.settings.effective_theme();
+    let theme = active_app_theme(&state);
     let visible_month = state.visible_month;
     let selected_date = state.selected_date;
     let top_most = state.top_most;
@@ -1467,10 +1593,13 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                         "{text.settings}"
                     }
                     button {
-                        class: "link link-hover text-xs opacity-70",
+                        class: "link link-hover inline-flex items-center gap-1 text-xs opacity-70",
                         title: PROJECT_URL,
                         onclick: move |_| open_project_homepage(),
                         "{APP_VERSION}"
+                        if update_available() {
+                            Icon { width: 13, height: 13, icon: LdCircleArrowUp }
+                        }
                     }
                 }
 
@@ -2365,6 +2494,14 @@ fn mutate(app: Signal<AppState>, action: impl FnOnce(&mut AppState)) {
     app.with_mut(action);
 }
 
+fn active_app_theme(state: &AppState) -> String {
+    if state.dialog == DialogMode::Settings {
+        state.settings_editor.effective_theme()
+    } else {
+        state.settings.effective_theme()
+    }
+}
+
 fn handle_todo_dialog_key(
     event: KeyboardEvent,
     app: Signal<AppState>,
@@ -2457,6 +2594,89 @@ fn close_dialog(app: Signal<AppState>) {
         state.settings_hotkey_recording = false;
         state.new_default_reminder.clear();
     });
+}
+
+fn start_update_check() {
+    if UPDATE_CHECK_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    std::thread::spawn(|| {
+        let update_available = latest_release_version_with_retries()
+            .map(|latest| version_has_update(APP_VERSION, &latest))
+            .unwrap_or(false);
+        UPDATE_STATUS.store(
+            if update_available {
+                UPDATE_STATUS_AVAILABLE
+            } else {
+                UPDATE_STATUS_NO_UPDATE
+            },
+            Ordering::SeqCst,
+        );
+    });
+}
+
+fn update_available() -> bool {
+    UPDATE_STATUS.load(Ordering::SeqCst) == UPDATE_STATUS_AVAILABLE
+}
+
+fn latest_release_version_with_retries() -> Option<String> {
+    for _ in 0..3 {
+        if let Some(version) = fetch_latest_release_version() {
+            return Some(version);
+        }
+    }
+    None
+}
+
+fn fetch_latest_release_version() -> Option<String> {
+    let response = fetch_latest_release_body()?;
+    extract_json_string(&response, "tag_name")
+}
+
+#[cfg(windows)]
+fn fetch_latest_release_body() -> Option<String> {
+    unsafe { winhttp_get("api.github.com", LATEST_RELEASE_API_PATH) }
+}
+
+#[cfg(not(windows))]
+fn fetch_latest_release_body() -> Option<String> {
+    None
+}
+
+fn version_has_update(current: &str, latest: &str) -> bool {
+    normalize_version(current) != normalize_version(latest)
+}
+
+fn normalize_version(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .to_ascii_lowercase()
+}
+
+fn extract_json_string(body: &str, key: &str) -> Option<String> {
+    let quoted_key = format!("\"{key}\"");
+    let key_index = body.find(&quoted_key)?;
+    let after_key = &body[key_index + quoted_key.len()..];
+    let colon_index = after_key.find(':')?;
+    let after_colon = after_key[colon_index + 1..].trim_start();
+    let value = after_colon.strip_prefix('"')?;
+    let mut result = String::new();
+    let mut escaped = false;
+    for chr in value.chars() {
+        if escaped {
+            result.push(chr);
+            escaped = false;
+            continue;
+        }
+        match chr {
+            '\\' => escaped = true,
+            '"' => return Some(result),
+            _ => result.push(chr),
+        }
+    }
+    None
 }
 
 fn apply_settings(app: Signal<AppState>) {
@@ -4145,6 +4365,53 @@ mod tests {
 
         assert!(parse_hotkey("X").is_none());
         assert!(parse_hotkey("Ctrl+Alt+Mouse").is_none());
+    }
+
+    #[test]
+    fn update_check_compares_normalized_versions_and_extracts_tag() {
+        assert!(!version_has_update("v0.0.3", "0.0.3"));
+        assert!(version_has_update("develop", "v0.0.3"));
+        assert!(version_has_update("v0.0.2", "v0.0.3"));
+        assert_eq!(
+            extract_json_string(r#"{"name":"SoTodo","tag_name":"v0.0.3"}"#, "tag_name"),
+            Some("v0.0.3".into())
+        );
+    }
+
+    #[test]
+    fn settings_theme_previews_from_editor_without_saving() {
+        let today = Local::now().date_naive();
+        let mut state = AppState {
+            todos: Vec::new(),
+            settings: Settings {
+                theme: "light".into(),
+                ..Settings::default()
+            },
+            settings_editor: Settings {
+                theme: "dark".into(),
+                ..Settings::default()
+            },
+            mode: ViewMode::List,
+            query: String::new(),
+            visible_month: first_of_month(today),
+            selected_date: today,
+            collapsed_days: Vec::new(),
+            pending_completed_occurrences: Vec::new(),
+            top_most: false,
+            dialog: DialogMode::Settings,
+            editor: TodoEditor::new(None, &[15]),
+            settings_hotkey_recording: false,
+            pending_delete_id: None,
+            new_default_reminder: String::new(),
+            reminder_generation: 0,
+            delivered_reminder_ids: Vec::new(),
+        };
+
+        assert_eq!(active_app_theme(&state), "dark");
+        assert_eq!(state.settings.effective_theme(), "light");
+
+        state.dialog = DialogMode::None;
+        assert_eq!(active_app_theme(&state), "light");
     }
 
     #[test]
