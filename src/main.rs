@@ -8,8 +8,9 @@ use dioxus::desktop::{
 use dioxus::prelude::*;
 use dioxus_free_icons::icons::ld_icons::{
     LdAlarmClock, LdCalendar, LdCheck, LdChevronDown, LdChevronLeft, LdChevronRight,
-    LdChevronsDown, LdChevronsUp, LdCircleCheck, LdClock, LdLanguages, LdListTodo, LdMinus,
-    LdPalette, LdPencil, LdPin, LdPinOff, LdPlus, LdRepeat, LdSave, LdSettings, LdTrash2, LdX,
+    LdChevronsDown, LdChevronsUp, LdCircleCheck, LdClock, LdKeyboard, LdLanguages, LdListTodo,
+    LdMinus, LdPalette, LdPencil, LdPin, LdPinOff, LdPlus, LdRepeat, LdSave, LdSettings, LdTrash2,
+    LdX,
 };
 use dioxus_free_icons::Icon;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -230,6 +231,7 @@ struct WindowsTray {
     hwnd: std::sync::Arc<std::sync::atomic::AtomicIsize>,
     enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     labels: std::sync::Arc<std::sync::Mutex<TrayLabels>>,
+    hotkey: std::sync::Arc<std::sync::Mutex<HotkeyConfig>>,
 }
 
 #[cfg(windows)]
@@ -256,13 +258,29 @@ impl TrayLabels {
 }
 
 #[cfg(windows)]
+#[derive(Clone)]
+struct HotkeyConfig {
+    enabled: bool,
+    value: String,
+}
+
+#[cfg(windows)]
 impl WindowsTray {
-    fn new(language: Language, main_hwnd: isize) -> Self {
+    fn new(
+        language: Language,
+        main_hwnd: isize,
+        hotkey_enabled: bool,
+        hotkey_value: String,
+    ) -> Self {
         use std::sync::{atomic::AtomicBool, atomic::AtomicIsize, Arc};
 
         let hwnd = Arc::new(AtomicIsize::new(0));
         let enabled = Arc::new(AtomicBool::new(false));
         let labels = native_tray_labels(language);
+        let hotkey = Arc::new(std::sync::Mutex::new(HotkeyConfig {
+            enabled: hotkey_enabled,
+            value: hotkey_value,
+        }));
         MAIN_WINDOW_HWND.store(main_hwnd, Ordering::SeqCst);
         {
             let mut current = labels
@@ -273,14 +291,16 @@ impl WindowsTray {
 
         let thread_hwnd = Arc::clone(&hwnd);
         let thread_enabled = Arc::clone(&enabled);
+        let thread_hotkey = Arc::clone(&hotkey);
         std::thread::spawn(move || unsafe {
-            run_windows_tray(thread_hwnd, thread_enabled);
+            run_windows_tray(thread_hwnd, thread_enabled, thread_hotkey);
         });
 
         Self {
             hwnd,
             enabled,
             labels,
+            hotkey,
         }
     }
 
@@ -310,6 +330,28 @@ impl WindowsTray {
             }
         }
     }
+
+    fn set_hotkey(&self, enabled: bool, value: String) {
+        {
+            let mut hotkey = self
+                .hotkey
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            hotkey.enabled = enabled;
+            hotkey.value = value;
+        }
+        let hwnd = self.hwnd.load(Ordering::SeqCst) as windows_sys::Win32::Foundation::HWND;
+        if !hwnd.is_null() {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    hwnd,
+                    WM_HOTKEY_APPLY,
+                    0,
+                    0,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -323,7 +365,11 @@ const WM_TRAY_ICON: u32 = 0x0400 + 10;
 #[cfg(windows)]
 const WM_TRAY_APPLY: u32 = 0x0400 + 11;
 #[cfg(windows)]
+const WM_HOTKEY_APPLY: u32 = 0x0400 + 12;
+#[cfg(windows)]
 const TRAY_UID: u32 = 1;
+#[cfg(windows)]
+const HOTKEY_ID_SHOW_WINDOW: i32 = 2001;
 #[cfg(windows)]
 const TRAY_MENU_SHOW: usize = 1001;
 #[cfg(windows)]
@@ -345,6 +391,7 @@ fn current_main_hwnd() -> isize {
 unsafe fn run_windows_tray(
     hwnd_slot: std::sync::Arc<std::sync::atomic::AtomicIsize>,
     enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hotkey: std::sync::Arc<std::sync::Mutex<HotkeyConfig>>,
 ) {
     use std::ptr::null_mut;
     use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIM_DELETE};
@@ -386,7 +433,9 @@ unsafe fn run_windows_tray(
 
     let (icon, owns_icon) = load_tray_icon();
     let mut icon_added = false;
+    let mut hotkey_registered = false;
     apply_tray_icon(hwnd, icon, enabled.load(Ordering::SeqCst), &mut icon_added);
+    apply_hotkey(hwnd, &hotkey, &mut hotkey_registered);
 
     let mut message = MSG::default();
     while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
@@ -394,10 +443,17 @@ unsafe fn run_windows_tray(
             apply_tray_icon(hwnd, icon, enabled.load(Ordering::SeqCst), &mut icon_added);
             continue;
         }
+        if message.message == WM_HOTKEY_APPLY {
+            apply_hotkey(hwnd, &hotkey, &mut hotkey_registered);
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
 
+    if hotkey_registered {
+        unregister_hotkey(hwnd);
+    }
     if icon_added {
         let data = notify_icon_data(hwnd, icon);
         Shell_NotifyIconW(NIM_DELETE, &data);
@@ -418,7 +474,8 @@ unsafe extern "system" fn tray_window_proc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, PostQuitMessage, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+        DefWindowProcW, PostQuitMessage, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+        WM_RBUTTONUP,
     };
 
     if msg == WM_TRAY_ICON {
@@ -433,6 +490,11 @@ unsafe extern "system" fn tray_window_proc(
             }
             _ => {}
         }
+    }
+
+    if msg == WM_HOTKEY && wparam == HOTKEY_ID_SHOW_WINDOW as usize {
+        restore_main_window_native();
+        return 0;
     }
 
     if msg == WM_DESTROY {
@@ -518,6 +580,63 @@ unsafe fn apply_tray_icon(
         }
         (false, false) => {}
     }
+}
+
+#[cfg(windows)]
+unsafe fn apply_hotkey(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    hotkey: &std::sync::Arc<std::sync::Mutex<HotkeyConfig>>,
+    registered: &mut bool,
+) {
+    let config = hotkey
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+
+    if *registered {
+        unregister_hotkey(hwnd);
+        *registered = false;
+    }
+
+    if !config.enabled {
+        return;
+    }
+
+    let Some(spec) = parse_hotkey(&config.value) else {
+        return;
+    };
+
+    *registered = register_hotkey(hwnd, spec);
+}
+
+#[cfg(windows)]
+unsafe fn register_hotkey(hwnd: windows_sys::Win32::Foundation::HWND, spec: HotkeySpec) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    };
+
+    let mut modifiers = MOD_NOREPEAT;
+    if spec.ctrl {
+        modifiers |= MOD_CONTROL;
+    }
+    if spec.alt {
+        modifiers |= MOD_ALT;
+    }
+    if spec.shift {
+        modifiers |= MOD_SHIFT;
+    }
+    if spec.win {
+        modifiers |= MOD_WIN;
+    }
+
+    RegisterHotKey(hwnd, HOTKEY_ID_SHOW_WINDOW, modifiers, spec.key) != 0
+}
+
+#[cfg(windows)]
+unsafe fn unregister_hotkey(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+
+    UnregisterHotKey(hwnd, HOTKEY_ID_SHOW_WINDOW);
 }
 
 #[cfg(windows)]
@@ -644,9 +763,17 @@ fn write_wide_fixed(target: &mut [u16], value: &str) {
 fn TodoApp() -> Element {
     let app = use_signal(AppState::load);
     let mut clock = use_signal(|| Local::now().naive_local());
-    let initial_language = app().settings.effective_language();
+    let initial_settings = app().settings;
+    let initial_language = initial_settings.effective_language();
     #[cfg(windows)]
-    let tray = use_hook(move || WindowsTray::new(initial_language, current_main_hwnd()));
+    let tray = use_hook(move || {
+        WindowsTray::new(
+            initial_language,
+            current_main_hwnd(),
+            initial_settings.hotkey_enabled,
+            initial_settings.hotkey.clone(),
+        )
+    });
     use_effect(move || {
         let settings = app().settings;
         #[cfg(windows)]
@@ -654,6 +781,7 @@ fn TodoApp() -> Element {
             tray.set_main_window(current_main_hwnd());
             tray.set_language(settings.effective_language());
             tray.set_visible(settings.tray_enabled);
+            tray.set_hotkey(settings.hotkey_enabled, settings.hotkey.clone());
         }
         apply_startup_setting(settings.startup_enabled);
     });
@@ -715,7 +843,7 @@ fn TodoApp() -> Element {
                         button {
                             class: "btn btn-ghost btn-square btn-sm",
                             title: "{text.settings}",
-                            onclick: move |_| mutate(app, |s| s.dialog = DialogMode::Settings),
+                            onclick: move |_| show_settings(app),
                             Icon { width: 16, height: 16, icon: LdSettings }
                         }
                         div { class: "ml-1 flex items-center gap-1 border-l border-base-300 pl-2",
@@ -1002,7 +1130,10 @@ fn TodoDialog(
 
     rsx! {
         div { class: "modal modal-open",
-            div { class: "modal-box todo-dialog-box",
+            div {
+                class: "modal-box todo-dialog-box focus:outline-none",
+                tabindex: "0",
+                onkeydown: move |e| handle_todo_dialog_key(e, app, clock),
                 h2 { class: "todo-dialog-title flex items-center gap-2 text-lg font-bold",
                     if editor.editing_id.is_some() {
                         Icon { width: 18, height: 18, icon: LdPencil }
@@ -1021,6 +1152,9 @@ fn TodoDialog(
                         input {
                             class: "input input-bordered w-full",
                             value: "{editor.title}",
+                            onmounted: move |e| async move {
+                                let _ = e.data().set_focus(true).await;
+                            },
                             oninput: move |e| mutate(app, |s| s.editor.title = e.value()),
                         }
                     }
@@ -1030,6 +1164,11 @@ fn TodoDialog(
                         textarea {
                             class: "textarea textarea-bordered todo-dialog-notes w-full",
                             value: "{editor.notes}",
+                            onkeydown: move |e| {
+                                if e.key() == Key::Enter {
+                                    e.stop_propagation();
+                                }
+                            },
                             oninput: move |e| mutate(app, |s| s.editor.notes = e.value()),
                         }
                     }
@@ -1167,6 +1306,11 @@ fn TodoDialog(
                                         selected: editor.recurrence_kind == RecurrenceKind::Monthly,
                                         "{text.monthly}"
                                     }
+                                    option {
+                                        value: "daily",
+                                        selected: editor.recurrence_kind == RecurrenceKind::Daily,
+                                        "{text.daily}"
+                                    }
                                 }
                             }
 
@@ -1185,7 +1329,7 @@ fn TodoDialog(
                                         }
                                     }
                                 }
-                            } else {
+                            } else if editor.recurrence_kind == RecurrenceKind::Monthly {
                                 label { class: "form-control todo-dialog-field",
                                     div { class: "label py-1", span { class: "label-text", "{text.monthly_repeat}" } }
                                     select {
@@ -1305,11 +1449,18 @@ fn TodoDialog(
 
 #[component]
 fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Element {
-    let settings = state.settings.clone();
+    let settings = state.settings_editor.clone();
+    let hotkey_recording = state.settings_hotkey_recording;
 
     rsx! {
         div { class: "modal modal-open",
-            div { class: "modal-box settings-dialog-box",
+            div {
+                class: "modal-box settings-dialog-box focus:outline-none",
+                tabindex: "0",
+                onmounted: move |e| async move {
+                    let _ = e.data().set_focus(true).await;
+                },
+                onkeydown: move |e| handle_settings_dialog_key(e, app),
                 div { class: "settings-dialog-title flex items-center justify-between gap-3",
                     h2 { class: "flex items-center gap-2 text-lg font-bold",
                         Icon { width: 18, height: 18, icon: LdSettings }
@@ -1335,8 +1486,7 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                     class: "select select-bordered w-full",
                                     value: "{settings.language}",
                                     onchange: move |e| mutate(app, |s| {
-                                        s.settings.language = e.value();
-                                        s.save();
+                                        s.settings_editor.language = e.value();
                                     }),
                                     option {
                                         value: "system",
@@ -1367,8 +1517,7 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                     class: "select select-bordered w-full",
                                     value: "{settings.theme}",
                                     onchange: move |e| mutate(app, |s| {
-                                        s.settings.theme = e.value();
-                                        s.save();
+                                        s.settings_editor.theme = e.value();
                                     }),
                                     option {
                                         value: "system",
@@ -1394,8 +1543,7 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                     class: "select select-bordered w-full",
                                     value: "{settings.close_behavior}",
                                     onchange: move |e| mutate(app, |s| {
-                                        s.settings.close_behavior = e.value();
-                                        s.save();
+                                        s.settings_editor.close_behavior = e.value();
                                     }),
                                     option {
                                         value: "prompt",
@@ -1424,8 +1572,7 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                     class: "toggle toggle-primary",
                                     checked: settings.tray_enabled,
                                     onchange: move |e| mutate(app, |s| {
-                                        s.settings.tray_enabled = e.checked();
-                                        s.save();
+                                        s.settings_editor.tray_enabled = e.checked();
                                     }),
                                 }
                             }
@@ -1439,9 +1586,39 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                     class: "toggle toggle-primary",
                                     checked: settings.startup_enabled,
                                     onchange: move |e| mutate(app, |s| {
-                                        s.settings.startup_enabled = e.checked();
-                                        s.save();
+                                        s.settings_editor.startup_enabled = e.checked();
                                     }),
+                                }
+                            }
+                        }
+
+                        div { class: "p-3",
+                            label { class: "flex cursor-pointer items-center justify-between gap-3",
+                                span { class: "font-semibold", "{text.hotkey_enabled}" }
+                                input {
+                                    r#type: "checkbox",
+                                    class: "toggle toggle-primary",
+                                    checked: settings.hotkey_enabled,
+                                    onchange: move |e| mutate(app, |s| {
+                                        s.settings_editor.hotkey_enabled = e.checked();
+                                    }),
+                                }
+                            }
+                            label { class: "form-control mt-2",
+                                div { class: "label py-1", span { class: "label-text", "{text.hotkey}" } }
+                                button {
+                                    r#type: "button",
+                                    class: "input input-bordered flex w-full items-center justify-start gap-2 text-left",
+                                    disabled: !settings.hotkey_enabled,
+                                    onclick: move |_| mutate(app, |s| s.settings_hotkey_recording = true),
+                                    onblur: move |_| mutate(app, |s| s.settings_hotkey_recording = false),
+                                    onkeydown: move |e| capture_hotkey_keydown(e, app),
+                                    Icon { width: 15, height: 15, icon: LdKeyboard }
+                                    if hotkey_recording {
+                                        span { class: "opacity-60", "{text.hotkey_recording}" }
+                                    } else {
+                                        span { "{settings.hotkey}" }
+                                    }
                                 }
                             }
                         }
@@ -1458,11 +1635,10 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                                         button {
                                             class: "btn btn-ghost btn-square btn-xs text-error",
                                             onclick: move |_| mutate(app, |s| {
-                                                s.settings.default_reminder_minutes.retain(|value| *value != minutes);
-                                                if s.settings.default_reminder_minutes.is_empty() {
-                                                    s.settings.default_reminder_minutes = vec![15, 5];
+                                                s.settings_editor.default_reminder_minutes.retain(|value| *value != minutes);
+                                                if s.settings_editor.default_reminder_minutes.is_empty() {
+                                                    s.settings_editor.default_reminder_minutes = vec![15, 5];
                                                 }
-                                                s.save();
                                             }),
                                             Icon { width: 13, height: 13, icon: LdX }
                                         }
@@ -1491,7 +1667,11 @@ fn SettingsDialog(app: Signal<AppState>, state: AppState, text: Strings) -> Elem
                 }
 
                 div { class: "modal-action settings-dialog-actions",
-                    button { class: "btn btn-primary", onclick: move |_| close_dialog(app),
+                    button { class: "btn", onclick: move |_| close_dialog(app),
+                        Icon { width: 15, height: 15, icon: LdX }
+                        "{text.cancel}"
+                    }
+                    button { class: "btn btn-primary", onclick: move |_| apply_settings(app),
                         Icon { width: 15, height: 15, icon: LdCheck }
                         "{text.done}"
                     }
@@ -1576,6 +1756,8 @@ struct AppState {
     top_most: bool,
     dialog: DialogMode,
     editor: TodoEditor,
+    settings_editor: Settings,
+    settings_hotkey_recording: bool,
     pending_delete_id: Option<Uuid>,
     new_default_reminder: String,
     reminder_generation: u64,
@@ -1586,10 +1768,11 @@ impl AppState {
     fn load() -> Self {
         let today = Local::now().date_naive();
         let store = load_store();
+        let settings = store.settings.clone();
 
         Self {
             todos: store.todos,
-            settings: store.settings,
+            settings,
             mode: ViewMode::List,
             query: String::new(),
             visible_month: first_of_month(today),
@@ -1599,6 +1782,8 @@ impl AppState {
             top_most: false,
             dialog: DialogMode::None,
             editor: TodoEditor::new(None, &[15, 5]),
+            settings_editor: store.settings,
+            settings_hotkey_recording: false,
             pending_delete_id: None,
             new_default_reminder: String::new(),
             reminder_generation: 0,
@@ -1660,6 +1845,10 @@ struct Settings {
     tray_enabled: bool,
     #[serde(default = "default_startup_enabled")]
     startup_enabled: bool,
+    #[serde(default = "default_hotkey_enabled")]
+    hotkey_enabled: bool,
+    #[serde(default = "default_hotkey")]
+    hotkey: String,
     #[serde(default = "default_reminders")]
     default_reminder_minutes: Vec<i32>,
 }
@@ -1672,6 +1861,8 @@ impl Default for Settings {
             close_behavior: default_close_behavior(),
             tray_enabled: default_tray_enabled(),
             startup_enabled: default_startup_enabled(),
+            hotkey_enabled: default_hotkey_enabled(),
+            hotkey: default_hotkey(),
             default_reminder_minutes: default_reminders(),
         }
     }
@@ -1765,7 +1956,7 @@ impl TodoItem {
     fn is_recurring(&self) -> bool {
         matches!(
             self.recurrence.as_ref().map(|rule| rule.kind),
-            Some(RecurrenceKind::Weekly | RecurrenceKind::Monthly)
+            Some(RecurrenceKind::Weekly | RecurrenceKind::Monthly | RecurrenceKind::Daily)
         )
     }
 
@@ -1807,6 +1998,7 @@ struct RecurrenceRule {
 enum RecurrenceKind {
     Weekly,
     Monthly,
+    Daily,
 }
 
 impl RecurrenceKind {
@@ -1814,14 +2006,15 @@ impl RecurrenceKind {
         match self {
             Self::Weekly => "weekly",
             Self::Monthly => "monthly",
+            Self::Daily => "daily",
         }
     }
 
     fn from_value(value: &str) -> Self {
-        if value == "monthly" {
-            Self::Monthly
-        } else {
-            Self::Weekly
+        match value {
+            "monthly" => Self::Monthly,
+            "daily" => Self::Daily,
+            _ => Self::Weekly,
         }
     }
 }
@@ -2008,6 +2201,7 @@ struct Strings {
     repeat_type: String,
     weekly: String,
     monthly: String,
+    daily: String,
     monthly_repeat: String,
     day_of_month: String,
     last_workday: String,
@@ -2029,6 +2223,9 @@ struct Strings {
     exit_app: String,
     tray_enabled: String,
     startup_enabled: String,
+    hotkey_enabled: String,
+    hotkey: String,
+    hotkey_recording: String,
     close_app: String,
     close_confirm: String,
     delete_confirm: String,
@@ -2068,6 +2265,7 @@ impl Strings {
                 repeat_type: "\u{91cd}\u{590d}\u{65b9}\u{5f0f}".into(),
                 weekly: "\u{6309}\u{5468}".into(),
                 monthly: "\u{6309}\u{6708}".into(),
+                daily: "\u{6bcf}\u{5929}".into(),
                 monthly_repeat: "\u{6309}\u{6708}\u{89c4}\u{5219}".into(),
                 day_of_month: "\u{6bcf}\u{6708}\u{51e0}\u{53f7}".into(),
                 last_workday: "\u{6700}\u{540e}\u{4e00}\u{4e2a}\u{5de5}\u{4f5c}\u{65e5}".into(),
@@ -2089,6 +2287,9 @@ impl Strings {
                 exit_app: "\u{9000}\u{51fa}\u{7a0b}\u{5e8f}".into(),
                 tray_enabled: "\u{542f}\u{7528}\u{7cfb}\u{7edf}\u{6258}\u{76d8}".into(),
                 startup_enabled: "\u{5f00}\u{673a}\u{81ea}\u{542f}".into(),
+                hotkey_enabled: "\u{542f}\u{7528}\u{5feb}\u{6377}\u{952e}".into(),
+                hotkey: "\u{663e}\u{793a}\u{7a97}\u{53e3}\u{5feb}\u{6377}\u{952e}".into(),
+                hotkey_recording: "\u{8bf7}\u{6309}\u{5feb}\u{6377}\u{952e}".into(),
                 close_app: "\u{5173}\u{95ed} So Todo".into(),
                 close_confirm: "\u{9009}\u{62e9}\u{6700}\u{5c0f}\u{5316}\u{5230}\u{6258}\u{76d8}\u{6216}\u{9000}\u{51fa}\u{7a0b}\u{5e8f}\u{3002}".into(),
                 delete_confirm: "\u{786e}\u{5b9a}\u{5220}\u{9664}\u{8fd9}\u{4e2a}\u{5f85}\u{529e}\u{5417}\u{ff1f}".into(),
@@ -2123,6 +2324,7 @@ impl Strings {
                 repeat_type: "Repeat type".into(),
                 weekly: "Weekly".into(),
                 monthly: "Monthly".into(),
+                daily: "Daily".into(),
                 monthly_repeat: "Monthly repeat".into(),
                 day_of_month: "Day of month".into(),
                 last_workday: "Last workday".into(),
@@ -2144,6 +2346,9 @@ impl Strings {
                 exit_app: "Exit app".into(),
                 tray_enabled: "Enable system tray".into(),
                 startup_enabled: "Start with Windows".into(),
+                hotkey_enabled: "Enable shortcut".into(),
+                hotkey: "Show window shortcut".into(),
+                hotkey_recording: "Press shortcut".into(),
                 close_app: "Close So Todo".into(),
                 close_confirm: "Choose whether to minimize to tray or exit the app.".into(),
                 delete_confirm: "Delete this todo?".into(),
@@ -2160,6 +2365,75 @@ fn mutate(app: Signal<AppState>, action: impl FnOnce(&mut AppState)) {
     app.with_mut(action);
 }
 
+fn handle_todo_dialog_key(
+    event: KeyboardEvent,
+    app: Signal<AppState>,
+    clock: Signal<NaiveDateTime>,
+) {
+    match event.key() {
+        Key::Escape => {
+            event.prevent_default();
+            close_dialog(app);
+        }
+        Key::Enter => {
+            event.prevent_default();
+            save_todo(app, clock);
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_dialog_key(event: KeyboardEvent, app: Signal<AppState>) {
+    match event.key() {
+        Key::Escape => {
+            event.prevent_default();
+            close_dialog(app);
+        }
+        Key::Enter => {
+            event.prevent_default();
+            apply_settings(app);
+        }
+        _ => {}
+    }
+}
+
+fn capture_hotkey_keydown(event: KeyboardEvent, app: Signal<AppState>) {
+    if !app().settings_hotkey_recording {
+        if is_keyboard_activation_key(&event.key()) {
+            event.prevent_default();
+            event.stop_propagation();
+            mutate(app, |state| state.settings_hotkey_recording = true);
+        }
+        return;
+    }
+
+    event.prevent_default();
+    event.stop_propagation();
+
+    if event.key() == Key::Escape {
+        mutate(app, |state| state.settings_hotkey_recording = false);
+        return;
+    }
+
+    let modifiers = event.modifiers();
+    if let Some(value) = hotkey_from_key(
+        &event.key(),
+        modifiers.ctrl(),
+        modifiers.alt(),
+        modifiers.shift(),
+        modifiers.meta(),
+    ) {
+        mutate(app, |state| {
+            state.settings_editor.hotkey = value;
+            state.settings_hotkey_recording = false;
+        });
+    }
+}
+
+fn is_keyboard_activation_key(key: &Key) -> bool {
+    matches!(key, Key::Enter) || matches!(key, Key::Character(value) if value == " ")
+}
+
 fn show_editor(app: Signal<AppState>, todo: Option<TodoItem>) {
     mutate(app, |state| {
         state.editor = TodoEditor::new(todo.as_ref(), &state.settings.default_reminder_minutes);
@@ -2167,10 +2441,37 @@ fn show_editor(app: Signal<AppState>, todo: Option<TodoItem>) {
     });
 }
 
+fn show_settings(app: Signal<AppState>) {
+    mutate(app, |state| {
+        state.settings_editor = state.settings.clone();
+        state.settings_hotkey_recording = false;
+        state.new_default_reminder.clear();
+        state.dialog = DialogMode::Settings;
+    });
+}
+
 fn close_dialog(app: Signal<AppState>) {
     mutate(app, |state| {
         state.dialog = DialogMode::None;
         state.pending_delete_id = None;
+        state.settings_hotkey_recording = false;
+        state.new_default_reminder.clear();
+    });
+}
+
+fn apply_settings(app: Signal<AppState>) {
+    mutate(app, |state| {
+        let mut settings = state.settings_editor.clone();
+        settings.default_reminder_minutes = normalize_reminders(&settings.default_reminder_minutes);
+        if parse_hotkey(&settings.hotkey).is_none() {
+            settings.hotkey = default_hotkey();
+        }
+        state.settings = settings;
+        state.settings_editor = state.settings.clone();
+        state.settings_hotkey_recording = false;
+        state.dialog = DialogMode::None;
+        state.new_default_reminder.clear();
+        state.save();
     });
 }
 
@@ -2453,9 +2754,8 @@ fn two_digits(value: u32) -> String {
 fn add_default_reminder(app: Signal<AppState>) {
     mutate(app, |state| {
         if let Some(value) = parse_i32(&state.new_default_reminder) {
-            add_reminder_value(&mut state.settings.default_reminder_minutes, value);
+            add_reminder_value(&mut state.settings_editor.default_reminder_minutes, value);
             state.new_default_reminder.clear();
-            state.save();
         }
     });
 }
@@ -2804,7 +3104,21 @@ fn due_dates_between(
     match rule.kind {
         RecurrenceKind::Weekly => weekly_due_dates(todo, rule, from, to),
         RecurrenceKind::Monthly => monthly_due_dates(todo, rule, from, to),
+        RecurrenceKind::Daily => daily_due_dates(todo, from, to),
     }
+}
+
+fn daily_due_dates(todo: &TodoItem, from: NaiveDateTime, to: NaiveDateTime) -> Vec<NaiveDateTime> {
+    let mut dates = Vec::new();
+    let mut date = from.date().max(todo.due_at.date());
+    while date <= to.date() {
+        let due_at = date.and_time(todo.due_at.time());
+        if due_at >= todo.due_at && due_at >= from && due_at <= to {
+            dates.push(due_at);
+        }
+        date += Duration::days(1);
+    }
+    dates
 }
 
 fn weekly_due_dates(
@@ -3012,6 +3326,9 @@ fn load_settings(connection: &Connection) -> rusqlite::Result<Settings> {
             .unwrap_or_else(default_tray_enabled),
         startup_enabled: load_bool_setting(connection, "startup_enabled")?
             .unwrap_or_else(startup_enabled_from_registry),
+        hotkey_enabled: load_bool_setting(connection, "hotkey_enabled")?
+            .unwrap_or_else(default_hotkey_enabled),
+        hotkey: load_setting(connection, "hotkey")?.unwrap_or_else(default_hotkey),
         default_reminder_minutes: load_default_reminders(connection)?,
     };
     settings.default_reminder_minutes = normalize_reminders(&settings.default_reminder_minutes);
@@ -3023,6 +3340,9 @@ fn load_settings(connection: &Connection) -> rusqlite::Result<Settings> {
     }
     if settings.theme != "system" && !THEMES.contains(&settings.theme.as_str()) {
         settings.theme = default_theme();
+    }
+    if parse_hotkey(&settings.hotkey).is_none() {
+        settings.hotkey = default_hotkey();
     }
     Ok(settings)
 }
@@ -3166,6 +3486,12 @@ fn save_store_to_db(transaction: &Transaction<'_>, store: &Store) -> rusqlite::R
         "startup_enabled",
         bool_setting(store.settings.startup_enabled),
     )?;
+    save_setting(
+        transaction,
+        "hotkey_enabled",
+        bool_setting(store.settings.hotkey_enabled),
+    )?;
+    save_setting(transaction, "hotkey", &store.settings.hotkey)?;
 
     transaction.execute("DELETE FROM settings_default_reminders", [])?;
     for (index, minutes) in normalize_reminders(&store.settings.default_reminder_minutes)
@@ -3280,14 +3606,15 @@ fn recurrence_kind_to_db(kind: RecurrenceKind) -> i32 {
     match kind {
         RecurrenceKind::Weekly => 1,
         RecurrenceKind::Monthly => 2,
+        RecurrenceKind::Daily => 3,
     }
 }
 
 fn recurrence_kind_from_db(value: i32) -> RecurrenceKind {
-    if value == 2 {
-        RecurrenceKind::Monthly
-    } else {
-        RecurrenceKind::Weekly
+    match value {
+        2 => RecurrenceKind::Monthly,
+        3 => RecurrenceKind::Daily,
+        _ => RecurrenceKind::Weekly,
     }
 }
 
@@ -3519,6 +3846,10 @@ fn default_startup_enabled() -> bool {
     false
 }
 
+fn default_hotkey_enabled() -> bool {
+    true
+}
+
 #[cfg(windows)]
 fn startup_enabled_from_registry() -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
@@ -3647,6 +3978,134 @@ fn default_close_behavior() -> String {
     "prompt".into()
 }
 
+fn default_hotkey() -> String {
+    "Ctrl+Alt+X".into()
+}
+
+fn hotkey_from_key(key: &Key, ctrl: bool, alt: bool, shift: bool, win: bool) -> Option<String> {
+    if !ctrl && !alt && !shift && !win {
+        return None;
+    }
+
+    let key = hotkey_key_label(key)?;
+    let mut parts = Vec::new();
+    if ctrl {
+        parts.push("Ctrl".to_string());
+    }
+    if alt {
+        parts.push("Alt".to_string());
+    }
+    if shift {
+        parts.push("Shift".to_string());
+    }
+    if win {
+        parts.push("Win".to_string());
+    }
+    parts.push(key);
+    Some(parts.join("+"))
+}
+
+fn hotkey_key_label(key: &Key) -> Option<String> {
+    match key {
+        Key::Character(value) => {
+            let mut chars = value.chars();
+            let chr = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            if chr == ' ' {
+                return Some("Space".into());
+            }
+            chr.is_ascii_alphanumeric()
+                .then(|| chr.to_ascii_uppercase().to_string())
+        }
+        Key::Control | Key::Alt | Key::Shift | Key::Meta | Key::Super => None,
+        _ => {
+            let value = key.to_string();
+            parse_hotkey_key(&value).is_some().then_some(value)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HotkeySpec {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+    key: u32,
+}
+
+fn parse_hotkey(value: &str) -> Option<HotkeySpec> {
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut win = false;
+    let mut key = None;
+
+    for part in value
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" => alt = true,
+            "shift" => shift = true,
+            "win" | "windows" | "meta" | "super" => win = true,
+            _ if key.is_none() => key = parse_hotkey_key(part),
+            _ => return None,
+        }
+    }
+
+    let key = key?;
+    (ctrl || alt || shift || win).then_some(HotkeySpec {
+        ctrl,
+        alt,
+        shift,
+        win,
+        key,
+    })
+}
+
+fn parse_hotkey_key(value: &str) -> Option<u32> {
+    let upper = value.trim().to_ascii_uppercase();
+    if upper.len() == 1 {
+        let byte = upper.as_bytes()[0];
+        if byte.is_ascii_alphanumeric() {
+            return Some(byte as u32);
+        }
+    }
+
+    if let Some(number) = upper
+        .strip_prefix('F')
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        if (1..=24).contains(&number) {
+            return Some(0x70 + number - 1);
+        }
+    }
+
+    match upper.as_str() {
+        "SPACE" => Some(0x20),
+        "ENTER" => Some(0x0D),
+        "ESC" | "ESCAPE" => Some(0x1B),
+        "TAB" => Some(0x09),
+        "BACKSPACE" => Some(0x08),
+        "DELETE" => Some(0x2E),
+        "INSERT" => Some(0x2D),
+        "HOME" => Some(0x24),
+        "END" => Some(0x23),
+        "PAGEUP" => Some(0x21),
+        "PAGEDOWN" => Some(0x22),
+        "ARROWUP" | "UP" => Some(0x26),
+        "ARROWDOWN" | "DOWN" => Some(0x28),
+        "ARROWLEFT" | "LEFT" => Some(0x25),
+        "ARROWRIGHT" | "RIGHT" => Some(0x27),
+        _ => None,
+    }
+}
+
 fn default_reminders() -> Vec<i32> {
     vec![15, 5]
 }
@@ -3658,6 +4117,35 @@ fn default_day_of_month() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkey_parser_accepts_default_and_function_keys() {
+        let default = parse_hotkey(&default_hotkey()).unwrap();
+        assert!(default.ctrl);
+        assert!(default.alt);
+        assert!(!default.shift);
+        assert!(!default.win);
+        assert_eq!(default.key, 'X' as u32);
+
+        let f12 = parse_hotkey("Ctrl+Shift+F12").unwrap();
+        assert!(f12.ctrl);
+        assert!(!f12.alt);
+        assert!(f12.shift);
+        assert_eq!(f12.key, 0x7B);
+
+        assert_eq!(
+            hotkey_from_key(&Key::Character("x".into()), true, true, false, false),
+            Some("Ctrl+Alt+X".into())
+        );
+        assert_eq!(
+            hotkey_from_key(&Key::F12, true, false, true, false),
+            Some("Ctrl+Shift+F12".into())
+        );
+        assert_eq!(parse_hotkey("Ctrl+Alt+Enter").unwrap().key, 0x0D);
+
+        assert!(parse_hotkey("X").is_none());
+        assert!(parse_hotkey("Ctrl+Alt+Mouse").is_none());
+    }
 
     #[test]
     fn monthly_last_workday_skips_weekend() {
@@ -3695,6 +4183,52 @@ mod tests {
         assert_eq!(
             dates[0].date(),
             NaiveDate::from_ymd_opt(2024, 8, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn daily_repeat_generates_each_day() {
+        let todo = TodoItem {
+            id: Uuid::nil(),
+            title: "journal".into(),
+            due_at: NaiveDate::from_ymd_opt(2024, 9, 2)
+                .unwrap()
+                .and_hms_opt(9, 30, 0)
+                .unwrap(),
+            notes: String::new(),
+            is_done: false,
+            completed_at: None,
+            reminder_minutes: vec![15],
+            recurrence: Some(RecurrenceRule {
+                kind: RecurrenceKind::Daily,
+                weekdays: Vec::new(),
+                day_of_month: 1,
+                monthly_kind: MonthlyKind::DayOfMonth,
+            }),
+            completions: Vec::new(),
+        };
+
+        let dates = due_dates_between(
+            &todo,
+            NaiveDate::from_ymd_opt(2024, 9, 2)
+                .unwrap()
+                .and_time(NaiveTime::MIN),
+            NaiveDate::from_ymd_opt(2024, 9, 4)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 999_999_999)
+                .unwrap(),
+        );
+
+        assert_eq!(
+            dates
+                .into_iter()
+                .map(|value| value.date())
+                .collect::<Vec<_>>(),
+            vec![
+                NaiveDate::from_ymd_opt(2024, 9, 2).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 9, 3).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 9, 4).unwrap(),
+            ]
         );
     }
 
@@ -3811,6 +4345,8 @@ mod tests {
             top_most: false,
             dialog: DialogMode::None,
             editor: TodoEditor::new(None, &[15, 5]),
+            settings_editor: Settings::default(),
+            settings_hotkey_recording: false,
             pending_delete_id: None,
             new_default_reminder: String::new(),
             reminder_generation: 0,
@@ -3854,6 +4390,8 @@ mod tests {
             top_most: false,
             dialog: DialogMode::None,
             editor: TodoEditor::new(None, &[15, 5]),
+            settings_editor: Settings::default(),
+            settings_hotkey_recording: false,
             pending_delete_id: None,
             new_default_reminder: String::new(),
             reminder_generation: 0,
@@ -3962,6 +4500,8 @@ mod tests {
             top_most: false,
             dialog: DialogMode::None,
             editor: TodoEditor::new(None, &[15]),
+            settings_editor: Settings::default(),
+            settings_hotkey_recording: false,
             pending_delete_id: None,
             new_default_reminder: String::new(),
             reminder_generation: 0,
@@ -4129,6 +4669,8 @@ mod tests {
             top_most: false,
             dialog: DialogMode::None,
             editor: TodoEditor::new(None, &[15]),
+            settings_editor: Settings::default(),
+            settings_hotkey_recording: false,
             pending_delete_id: None,
             new_default_reminder: String::new(),
             reminder_generation: 0,
